@@ -24,10 +24,8 @@ input { padding: 5px; font-size: 14px; width: 90px; text-transform: uppercase; }
 <div id="link"></div>
 <canvas id="c"></canvas>
 <script>
-// 服务器地址：本地打开时连接本机服务器，部署后改为你的 Render 地址
-var SERVER = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:')
-  ? 'ws://localhost:43879'
-  : 'wss://YOUR-APP.onrender.com';
+// Render 部署的国际象棋 WebSocket 服务
+var SERVER = 'wss://chess-online-server-popz.onrender.com';
 
 var S = 70;
 var N = S * 8;
