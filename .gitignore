@@ -1,0 +1,4 @@
+server/node_modules/
+server/output.log
+server/error.log
+project.private.config.json

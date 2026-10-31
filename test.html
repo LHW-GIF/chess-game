@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>国际象棋 联机</title>
+<style>
+body { margin: 0; background: #222; color: #eee; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 12px; box-sizing: border-box; min-height: 100vh; }
+canvas { background: #B58863; max-width: 100%; height: auto; }
+#st { margin: 8px 0; min-height: 22px; font-size: 16px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; margin-bottom: 6px; }
+button { padding: 6px 14px; font-size: 14px; cursor: pointer; }
+input { padding: 5px; font-size: 14px; width: 90px; text-transform: uppercase; }
+#link { font-size: 12px; color: #aaa; word-break: break-all; text-align: center; max-width: 560px; }
+</style>
+</head>
+<body>
+<div class="row">
+  <button id="btnCreate">创建房间</button>
+  <input id="inRoom" maxlength="6" placeholder="房间号">
+  <button id="btnJoin">加入房间</button>
+  <button id="btnResign">认输</button>
+</div>
+<div id="st">连接中...</div>
+<div id="link"></div>
+<canvas id="c"></canvas>
+<script>
+// 服务器地址：本地打开时连接本机服务器，部署后改为你的 Render 地址
+var SERVER = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:')
+  ? 'ws://localhost:43879'
+  : 'wss://YOUR-APP.onrender.com';
+
+var S = 70;
+var N = S * 8;
+var cvs = document.getElementById('c');
+cvs.width = N;
+cvs.height = N;
+var ctx = cvs.getContext('2d');
+var stEl = document.getElementById('st');
+var linkEl = document.getElementById('link');
+
+var cells = [];
+var turn = 'w';
+var myColor = null;   // 'w' | 'b'
+var roomId = '';
+var sel = null;
+var moves = [];
+var lastM = null;
+var inChk = false;
+var over = false;
+var ws = null;
+var connected = false;
+
+var S_w = {K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659'};
+var S_b = {K:'\u265A',Q:'\u265B',R:'\u265C',B:'\u265D',N:'\u265E',P:'\u265F'};
+var TYPE = {pawn:'P', knight:'N', bishop:'B', rook:'R', queen:'Q', king:'K'};
+
+function status(t) { stEl.textContent = t; }
+
+// 黑方视角时翻转棋盘显示
+function flip() { return myColor === 'b'; }
+function dr(r) { return flip() ? 7 - r : r; }
+function lr(r) { return flip() ? 7 - r : r; }
+
+function setBoard(b) {
+  cells = [];
+  for (var r = 0; r < 8; r++) {
+    cells[r] = [];
+    for (var c = 0; c < 8; c++) {
+      var p = b[r][c];
+      cells[r][c] = p ? [TYPE[p.type], p.color === 'white' ? 'w' : 'b'] : null;
+    }
+  }
+}
+
+function colorCode(name) { return name === 'white' ? 'w' : 'b'; }
+
+// 本地走法提示（仅用于高亮，最终合法性以服务器为准）
+function at(r, c) { return (r < 0 || r > 7 || c < 0 || c > 7) ? null : cells[r][c]; }
+
+function clear(fr, fc, tr, tc) {
+  var sr = Math.sign(tr - fr), sc = Math.sign(tc - fc);
+  var r = fr + sr, c = fc + sc;
+  while (r !== tr || c !== tc) { if (cells[r][c]) return false; r += sr; c += sc; }
+  return true;
+}
+
+function rawOk(fr, fc, tr, tc) {
+  var p = cells[fr][fc];
+  if (!p) return false;
+  var t = cells[tr][tc];
+  if (t && t[1] === p[1]) return false;
+  var dR = tr - fr, dC = tc - fc, ar = Math.abs(dR), ac = Math.abs(dC);
+  var tp = p[0], cl = p[1];
+  if (tp === 'P') {
+    var d = cl === 'w' ? -1 : 1, s = cl === 'w' ? 6 : 1;
+    if (dC === 0) {
+      if (dR === d && !t) return true;
+      if (dR === d * 2 && fr === s && !t && !cells[fr + d][fc]) return true;
+    }
+    if (ac === 1 && dR === d && t && t[1] !== cl) return true;
+    return false;
+  }
+  if (tp === 'R') return (dR === 0 || dC === 0) && (ar + ac > 0) && clear(fr, fc, tr, tc);
+  if (tp === 'N') return (ar === 2 && ac === 1) || (ar === 1 && ac === 2);
+  if (tp === 'B') return ar === ac && ar > 0 && clear(fr, fc, tr, tc);
+  if (tp === 'Q') return (dR === 0 || dC === 0 || ar === ac) && (ar + ac > 0) && clear(fr, fc, tr, tc);
+  if (tp === 'K') return ar <= 1 && ac <= 1 && (ar + ac > 0);
+  return false;
+}
+
+function sim(fr, fc, tr, tc) {
+  var nb = [];
+  for (var r = 0; r < 8; r++) { nb[r] = []; for (var c = 0; c < 8; c++) nb[r][c] = cells[r][c] ? [cells[r][c][0], cells[r][c][1]] : null; }
+  nb[tr][tc] = nb[fr][fc]; nb[fr][fc] = null;
+  return nb;
+}
+
+function findK(board, color) {
+  for (var r = 0; r < 8; r++)
+    for (var c = 0; c < 8; c++)
+      if (board[r][c] && board[r][c][0] === 'K' && board[r][c][1] === color) return [r, c];
+  return null;
+}
+
+function att(board, r, c, by) {
+  var dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]];
+  for (var i = 0; i < 8; i++) {
+    var ddr = dirs[i][0], ddc = dirs[i][1], nr = r + ddr, nc = c + ddc;
+    while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+      var p = board[nr][nc];
+      if (p) {
+        if (p[1] === by) {
+          if (p[0] === 'K' || p[0] === 'Q') return true;
+          if (p[0] === 'B' && ddr !== 0 && ddc !== 0) return true;
+          if (p[0] === 'R' && (ddr === 0 || ddc === 0)) return true;
+        }
+        break;
+      }
+      nr += ddr; nc += ddc;
+    }
+  }
+  var kn = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+  for (var j = 0; j < 8; j++) {
+    var nr2 = r + kn[j][0], nc2 = c + kn[j][1];
+    if (nr2 >= 0 && nr2 < 8 && nc2 >= 0 && nc2 < 8) {
+      var p2 = board[nr2][nc2];
+      if (p2 && p2[1] === by && p2[0] === 'N') return true;
+    }
+  }
+  var pd = by === 'w' ? 1 : -1;
+  for (var dc2 = -1; dc2 <= 1; dc2 += 2) {
+    var nr3 = r + pd, nc3 = c + dc2;
+    if (nr3 >= 0 && nr3 < 8 && nc3 >= 0 && nc3 < 8) {
+      var p3 = board[nr3][nc3];
+      if (p3 && p3[1] === by && p3[0] === 'P') return true;
+    }
+  }
+  return false;
+}
+
+function inCheck(board, color) {
+  var k = findK(board, color);
+  return k ? att(board, k[0], k[1], color === 'w' ? 'b' : 'w') : false;
+}
+
+function canGo(fr, fc, tr, tc) {
+  if (!rawOk(fr, fc, tr, tc)) return false;
+  return !inCheck(sim(fr, fc, tr, tc), turn);
+}
+
+function getMoves(fr, fc) {
+  var m = [];
+  for (var tr = 0; tr < 8; tr++)
+    for (var tc = 0; tc < 8; tc++)
+      if ((fr !== tr || fc !== tc) && canGo(fr, fc, tr, tc)) m.push([tr, tc]);
+  return m;
+}
+
+function draw() {
+  ctx.fillStyle = '#B58863';
+  ctx.fillRect(0, 0, N, N);
+  for (var r = 0; r < 8; r++)
+    for (var c = 0; c < 8; c++) {
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#F0D9B5' : '#B58863';
+      ctx.fillRect(c * S, dr(r) * S, S, S);
+    }
+
+  if (lastM) {
+    ctx.fillStyle = 'rgba(155,199,0,0.41)';
+    ctx.fillRect(lastM[1] * S, dr(lastM[0]) * S, S, S);
+    ctx.fillRect(lastM[3] * S, dr(lastM[2]) * S, S, S);
+  }
+  if (sel) {
+    ctx.fillStyle = 'rgba(255,255,0,0.5)';
+    ctx.fillRect(sel[1] * S, dr(sel[0]) * S, S, S);
+  }
+  for (var i = 0; i < moves.length; i++) {
+    ctx.fillStyle = 'rgba(0,100,255,0.5)';
+    ctx.fillRect(moves[i][1] * S, dr(moves[i][0]) * S, S, S);
+  }
+  if (inChk) {
+    var k = findK(cells, turn);
+    if (k) { ctx.fillStyle = 'rgba(255,0,0,0.5)'; ctx.fillRect(k[1] * S, dr(k[0]) * S, S, S); }
+  }
+
+  for (var r2 = 0; r2 < 8; r2++)
+    for (var c2 = 0; c2 < 8; c2++) {
+      var p = cells[r2][c2];
+      if (!p) continue;
+      var sym = p[1] === 'w' ? S_w[p[0]] : S_b[p[0]];
+      var x = c2 * S + S / 2, y = dr(r2) * S + S / 2;
+      ctx.font = (S * 0.65) + 'px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#000';
+      ctx.fillText(sym, x + 1, y + 1);
+      ctx.fillStyle = p[1] === 'w' ? '#fff' : '#333';
+      ctx.fillText(sym, x, y);
+    }
+}
+
+function refreshStatus() {
+  if (!myColor) return;
+  if (over) return;
+  status(turn === myColor ? '你的回合' : '对方回合');
+}
+
+cvs.onclick = function(e) {
+  if (!connected || !myColor || over || turn !== myColor) return;
+  var rect = cvs.getBoundingClientRect();
+  var scale = cvs.width / rect.width;
+  var x = (e.clientX - rect.left) * scale;
+  var y = (e.clientY - rect.top) * scale;
+  var r = lr(Math.floor(y / S));
+  var c = Math.floor(x / S);
+  if (r < 0 || r > 7 || c < 0 || c > 7) return;
+
+  if (sel) {
+    for (var i = 0; i < moves.length; i++) {
+      if (moves[i][0] === r && moves[i][1] === c) {
+        send({ type: 'move', fr: sel[0], fc: sel[1], tr: r, tc: c });
+        sel = null; moves = [];
+        draw();
+        return;
+      }
+    }
+  }
+
+  var p = cells[r][c];
+  if (p && p[1] === myColor) {
+    sel = [r, c];
+    moves = getMoves(r, c);
+  } else {
+    sel = null; moves = [];
+  }
+  draw();
+};
+
+// ---------- 网络 ----------
+function connect(onOk) {
+  if (connected && ws) { onOk(); return; }
+  status('连接服务器...');
+  try { ws = new WebSocket(SERVER); } catch (err) { status('连接失败'); return; }
+  ws.onopen = function() { connected = true; onOk(); };
+  ws.onclose = function() {
+    connected = false;
+    if (!over && myColor) { over = true; status('连接断开，对局结束'); }
+    else if (!myColor) status('连接断开');
+  };
+  ws.onerror = function() { status('无法连接服务器（可能正在唤醒，请稍后重试）'); };
+  ws.onmessage = function(ev) {
+    var d = JSON.parse(ev.data);
+    handle(d);
+  };
+}
+
+function send(msg) {
+  if (ws && connected) ws.send(JSON.stringify(msg));
+}
+
+function handle(d) {
+  if (d.type === 'room_created') {
+    roomId = d.roomId;
+    myColor = 'w';
+    var url = location.origin + location.pathname + '?room=' + roomId;
+    linkEl.innerHTML = '房间号：<b>' + roomId + '</b><br>把下面的链接发给朋友：<br>' + url;
+    status('等待对手加入...');
+  } else if (d.type === 'room_joined') {
+    myColor = 'b';
+    roomId = d.roomId;
+    setBoard(d.board);
+    turn = 'w';
+    over = false;
+    refreshStatus();
+    draw();
+  } else if (d.type === 'game_start') {
+    setBoard(d.board);
+    turn = colorCode(d.currentTurn);
+    over = false;
+    lastM = null;
+    inChk = false;
+    sel = null; moves = [];
+    linkEl.textContent = roomId ? '房间号：' + roomId : '';
+    refreshStatus();
+    draw();
+  } else if (d.type === 'move_made') {
+    setBoard(d.board);
+    turn = colorCode(d.currentTurn);
+    lastM = [d.move.fr, d.move.fc, d.move.tr, d.move.tc];
+    inChk = !!d.inCheck;
+    sel = null; moves = [];
+    if (d.gameOver) {
+      over = true;
+      if (d.result === 'checkmate') {
+        status(colorCode(d.winner) === myColor ? '将杀！你赢了' : '将杀！你输了');
+      } else {
+        status('逼和，平局');
+      }
+    } else {
+      refreshStatus();
+    }
+    draw();
+  } else if (d.type === 'opponent_left') {
+    over = true;
+    status('对手已离开或认输，你赢了');
+    draw();
+  } else if (d.type === 'error') {
+    status('错误：' + d.error);
+  }
+}
+
+// ---------- 按钮 ----------
+document.getElementById('btnCreate').onclick = function() {
+  if (myColor) return;
+  connect(function() { send({ type: 'create_room', name: '玩家' }); });
+};
+
+document.getElementById('btnJoin').onclick = function() {
+  var id = document.getElementById('inRoom').value.trim().toUpperCase();
+  if (!id) { status('请输入房间号'); return; }
+  joinRoom(id);
+};
+
+document.getElementById('btnResign').onclick = function() {
+  if (!myColor || over) return;
+  send({ type: 'resign' });
+  over = true;
+  status('你认输了');
+};
+
+function joinRoom(id) {
+  connect(function() { send({ type: 'join_room', roomId: id, name: '玩家' }); });
+}
+
+// 通过链接 ?room=XXXX 自动加入
+(function() {
+  var m = /[?&]room=([^&]+)/.exec(location.search);
+  if (m) {
+    var id = decodeURIComponent(m[1]).toUpperCase();
+    document.getElementById('inRoom').value = id;
+    status('正在加入房间 ' + id + '...');
+    joinRoom(id);
+  } else {
+    status('点击"创建房间"开始，或输入房间号加入');
+  }
+})();
+
+draw();
+</script>
+</body>
+</html>

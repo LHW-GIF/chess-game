@@ -1,0 +1,20 @@
+{
+  "description": "国际象棋",
+  "setting": {
+    "urlCheck": false,
+    "es6": false,
+    "postcss": false,
+    "minified": false,
+    "enhance": false,
+    "disableUseStrict": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "compileType": "game",
+  "libVersion": "2.25.4",
+  "appid": "wxe0765cfbb2f4ec3b",
+  "projectname": "chess-game"
+}
