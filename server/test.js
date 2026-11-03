@@ -286,8 +286,48 @@ function testProtocol() {
   });
 }
 
+function testWaitingRoomSurvivesCreatorDisconnect() {
+  var creator, joiner, info;
+  return openClient().then(function(c) {
+    creator = c;
+    var created = expectMessage(creator, 'room_created');
+    creator.send(JSON.stringify({ type: 'create_room', name: '手机' }));
+    return created;
+  }).then(function(room) {
+    info = room;
+    return closeClient(creator);
+  }).then(function() {
+    return openClient();
+  }).then(function(j) {
+    joiner = j;
+    var offline = expectMessage(joiner, 'error');
+    joiner.send(JSON.stringify({ type: 'join_room', roomId: info.roomId, name: '电脑' }));
+    return offline;
+  }).then(function(err) {
+    assert.strictEqual(err.error, 'room creator is offline', 'joining while the creator is offline must give a clear message');
+    return openClient();
+  }).then(function(c2) {
+    creator = c2;
+    var reconnected = expectMessage(creator, 'reconnected');
+    creator.send(JSON.stringify({ type: 'reconnect', roomId: info.roomId, token: info.token }));
+    return reconnected;
+  }).then(function(rec) {
+    assert.strictEqual(rec.status, 'waiting', 'waiting room must still exist after the creator reconnects');
+    var joined = expectMessage(joiner, 'room_joined');
+    var started = expectMessage(creator, 'game_start');
+    joiner.send(JSON.stringify({ type: 'join_room', roomId: info.roomId, name: '电脑' }));
+    return Promise.all([joined, started]);
+  }).then(function() {
+    console.log('等待房间测试通过：创建者断线后房间保留，离线时加入给出明确提示，重连后可正常开局');
+  }).finally(function() {
+    return Promise.all([closeClient(creator), closeClient(joiner)]);
+  });
+}
+
 testRules();
 testProtocol().then(function() {
+  return testWaitingRoomSurvivesCreatorDisconnect();
+}).then(function() {
   process.exit(0);
 }, function(err) {
   console.error('测试失败:', err.stack || err);

@@ -524,6 +524,7 @@ function handleMessage(ws, pid, msg) {
     if (!room2) { roomMessageError(ws, 'room does not exist'); return; }
     if (room2.players.length >= 2) { roomMessageError(ws, 'room is full'); return; }
     if (room2.status !== 'waiting') { roomMessageError(ws, 'game has already started'); return; }
+    if (room2.players[0] && room2.players[0].disconnected) { roomMessageError(ws, 'room creator is offline'); return; }
     var joinToken = genToken();
     var joiningPlayer = { pid: pid, ws: ws, name: cleanName(msg.name, 'P2'), color: 'black', token: joinToken, disconnected: false };
     pl.name = joiningPlayer.name;
@@ -642,19 +643,20 @@ wss.on('connection', function(ws) {
           if (room.status === 'playing') {
             sendRoom(room, { type: 'opponent_status', status: 'disconnected', graceMs: reconnectGraceMs }, ws);
           }
-          roomPlayer.disconnectTimer = setTimeout(function() {
-            roomPlayer.disconnectTimer = null;
-            if (!rooms[room.id] || !roomPlayer.disconnected) return;
-            if (room.status === 'playing') {
+          // 等待中的房间不设宽限删除计时器：创建者可随时用令牌重连，过期由 cleanupExpiredRooms 统一处理
+          if (room.status === 'playing') {
+            roomPlayer.disconnectTimer = setTimeout(function() {
+              roomPlayer.disconnectTimer = null;
+              if (!rooms[room.id] || !roomPlayer.disconnected) return;
               var winner = null;
               for (var j = 0; j < room.players.length; j++) {
                 if (room.players[j] !== roomPlayer && !room.players[j].disconnected) winner = room.players[j];
               }
               finishRoom(room, 'disconnect', winner);
-            }
-            discardRoom(room);
-          }, reconnectGraceMs);
-          if (roomPlayer.disconnectTimer.unref) roomPlayer.disconnectTimer.unref();
+              discardRoom(room);
+            }, reconnectGraceMs);
+            if (roomPlayer.disconnectTimer.unref) roomPlayer.disconnectTimer.unref();
+          }
         } else if (room.status === 'finished') {
           discardRoom(room);
         }
