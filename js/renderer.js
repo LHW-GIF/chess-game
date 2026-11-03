@@ -19,16 +19,22 @@ function Renderer(ctx, cvs) {
   this.moveBg = 'rgba(0,100,255,0.5)';
   this.lastBg = 'rgba(155,199,0,0.4)';
   this.checkBg = 'rgba(255,0,0,0.5)';
+  this.flipped = false;
 }
+
+Renderer.prototype.dr = function(r) {
+  return this.flipped ? 7 - r : r;
+};
 
 Renderer.prototype.drawBoard = function(board) {
   var ctx = this.ctx;
   var r, c, x, y;
+  this.flipped = !!(board && board.myColor === 'black');
 
   for (r = 0; r < 8; r++) {
     for (c = 0; c < 8; c++) {
       x = this.ox + c * this.cell;
-      y = this.oy + r * this.cell;
+      y = this.oy + this.dr(r) * this.cell;
       ctx.fillStyle = (r + c) % 2 === 0 ? this.lightBg : this.darkBg;
       ctx.fillRect(x, y, this.cell, this.cell);
     }
@@ -49,7 +55,7 @@ Renderer.prototype.drawBoard = function(board) {
     this.drawCell(board.validMoves[i].r, board.validMoves[i].c, this.moveBg);
   }
   if (board.inCheck) {
-    var kp = this.findKing(board);
+    var kp = this.findKing(board, board.turn);
     if (kp) this.drawCell(kp.r, kp.c, this.checkBg);
   }
 
@@ -65,14 +71,14 @@ Renderer.prototype.drawBoard = function(board) {
 
 Renderer.prototype.drawCell = function(r, c, color) {
   this.ctx.fillStyle = color;
-  this.ctx.fillRect(this.ox + c * this.cell, this.oy + r * this.cell, this.cell, this.cell);
+  this.ctx.fillRect(this.ox + c * this.cell, this.oy + this.dr(r) * this.cell, this.cell, this.cell);
 };
 
-Renderer.prototype.findKing = function(board) {
+Renderer.prototype.findKing = function(board, color) {
   for (var r = 0; r < 8; r++) {
     for (var c = 0; c < 8; c++) {
       var p = board.get(r, c);
-      if (p && p.type === 'king' && p.color === board.myColor) return { r: r, c: c };
+      if (p && p.type === 'king' && p.color === color) return { r: r, c: c };
     }
   }
   return null;
@@ -81,7 +87,7 @@ Renderer.prototype.findKing = function(board) {
 Renderer.prototype.drawPiece = function(r, c, piece) {
   var ctx = this.ctx;
   var x = this.ox + c * this.cell + this.cell / 2;
-  var y = this.oy + r * this.cell + this.cell / 2;
+  var y = this.oy + this.dr(r) * this.cell + this.cell / 2;
   var sym = SYMBOLS[piece.color][piece.type];
   ctx.font = (this.cell * 0.7) + 'px serif';
   ctx.textAlign = 'center';
@@ -111,8 +117,8 @@ Renderer.prototype.drawCoords = function(board) {
 
 Renderer.prototype.hitTest = function(x, y) {
   var c = Math.floor((x - this.ox) / this.cell);
-  var r = Math.floor((y - this.oy) / this.cell);
-  if (r >= 0 && r < 8 && c >= 0 && c < 8) return { r: r, c: c };
+  var dr = Math.floor((y - this.oy) / this.cell);
+  if (dr >= 0 && dr < 8 && c >= 0 && c < 8) return { r: this.dr(dr), c: c };
   return null;
 };
 
@@ -215,7 +221,7 @@ Renderer.prototype.drawPromotion = function(color) {
   ctx.fillText('\u9009\u62e9\u5347\u53d8\u68cb\u5b50', this.w / 2, this.h / 2 - 80);
 
   var pieces = ['queen','rook','bishop','knight'];
-  var syms = { queen: '\u265B', rook: '\u265C', bishop: '\u265D', knight: '\u265E' };
+  var syms = SYMBOLS[color];
   var bw = 60, bh = 70;
   var sx = this.w / 2 - (pieces.length * (bw + 10)) / 2;
   var btns = [];

@@ -11,6 +11,7 @@ var board = null;
 var state = 'menu';
 var myColor = null;
 var roomId = '';
+var reconnectToken = '';
 var oppName = '';
 var promoPending = null;
 var promoBtns = [];
@@ -19,6 +20,7 @@ var menuBtns = [];
 var toastText = '';
 var toastTime = 0;
 var overMsg = '';
+var reconnecting = false;
 
 function Main() {
   var self = this;
@@ -36,31 +38,41 @@ function Main() {
     self.handleTap(t.clientX, t.clientY);
   });
 
+  if (typeof wx.onShow === 'function') {
+    wx.onShow(function(opts) {
+      var qRoom = opts && opts.query && opts.query.room ? opts.query.room : '';
+      if (qRoom && !roomId) {
+        socket.connect(function() {
+          socket.send({ type: 'join_room', roomId: qRoom, name: '\u73a9\u5bb6' });
+        }, function() { toast('\u52a0\u5165\u623f\u95f4\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u6253\u5f00\u9080\u8bf7'); });
+      } else if (roomId && reconnectToken && !socket.connected) {
+        tryReconnect();
+      }
+    });
+  }
+
   if (shareRoom) {
     socket.connect(function() {
       socket.send({ type: 'join_room', roomId: shareRoom, name: '\u73a9\u5bb6' });
-    }, function() {});
-  } else {
-    this.render();
+    }, function() { toast('\u52a0\u5165\u623f\u95f4\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u6253\u5f00\u9080\u8bf7'); });
   }
+  this.render();
 }
 
 Main.prototype.render = function() {
   var self = this;
   ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
 
-  if (state === 'menu') {
+  if (state === 'menu' || state === 'waiting') {
     self.renderMenu();
   } else if (state === 'playing' && board) {
     gameBtns = renderer.drawBar(
-      myColor === 'white' ? oppName : '\u5bf9\u624b',
-      myColor === 'white' ? '\u4f60' : oppName,
+      oppName || '\u5bf9\u624b',
+      '\u4f60',
       myColor, board.turn
     );
     renderer.drawBoard(board);
-    if (promoBtns.length > 0) {
-      promoBtns = renderer.drawPromotion(myColor === 'white' ? 'black' : 'white');
-    }
+    promoBtns = promoPending ? renderer.drawPromotion(myColor) : [];
   }
 
   if (toastText && Date.now() < toastTime) {
@@ -164,19 +176,29 @@ Main.prototype.handleTap = function(x, y) {
 };
 
 Main.prototype.onMenuBtn = function(id) {
-  var self = this;
   if (id === 'start') {
+    toast('\u6b63\u5728\u8fde\u63a5\u670d\u52a1\u5668...');
     socket.connect(function() {
       socket.send({ type: 'create_room', name: '\u73a9\u5bb6' });
-    }, function(msg) { toast('\u8fde\u63a5\u5931\u8d25'); });
+    }, function() { toast('\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5'); });
   } else if (id === 'share') {
     wx.shareAppMessage({ title: '\u6765\u73a9\u56fd\u9645\u8c61\u68cb', path: '/game.js?room=' + roomId });
   } else if (id === 'cancel') {
     socket.send({ type: 'leave_room' });
     roomId = '';
+    reconnectToken = '';
+    myColor = null;
+    board = null;
     state = 'menu';
   } else if (id === 'back') {
+    socket.send({ type: 'leave_room' });
     roomId = '';
+    reconnectToken = '';
+    myColor = null;
+    board = null;
+    promoPending = null;
+    promoBtns = [];
+    overMsg = '';
     state = 'menu';
   }
 };
@@ -186,10 +208,31 @@ function toast(msg) {
   toastTime = Date.now() + 2000;
 }
 
+function tryReconnect() {
+  if (reconnecting || !roomId || !reconnectToken) return;
+  reconnecting = true;
+  toast('\u7f51\u7edc\u6ce2\u52a8\uff0c\u6b63\u5728\u91cd\u8fde...');
+  socket.connect(function() {
+    reconnecting = false;
+    socket.send({ type: 'reconnect', roomId: roomId, token: reconnectToken });
+  }, function() {
+    reconnecting = false;
+    overMsg = '\u8fde\u63a5\u65ad\u5f00';
+    state = 'menu';
+  });
+}
+
 socket.on('room_created', function(data) {
   roomId = data.roomId;
   myColor = data.color;
+  reconnectToken = data.token || '';
   state = 'waiting';
+});
+
+socket.on('room_joined', function(data) {
+  roomId = data.roomId;
+  myColor = data.color;
+  reconnectToken = data.token || '';
 });
 
 socket.on('game_start', function(data) {
@@ -198,10 +241,52 @@ socket.on('game_start', function(data) {
   board.myColor = myColor;
   board.setBoard(data.board);
   board.turn = data.currentTurn;
+  if (data.castling) board.castling = data.castling;
+  board.enPassant = data.enPassant || null;
   if (data.players && data.players.length >= 2) {
     for (var i = 0; i < data.players.length; i++) {
       if (data.players[i].color !== myColor) oppName = data.players[i].name;
     }
+  }
+});
+
+socket.on('reconnected', function(data) {
+  roomId = data.roomId;
+  myColor = data.color;
+  reconnectToken = data.token || reconnectToken;
+  if (data.status === 'waiting') {
+    state = 'waiting';
+    toast('\u5df2\u6062\u590d\u623f\u95f4');
+    return;
+  }
+  state = 'playing';
+  board = new ChessBoard();
+  board.myColor = myColor;
+  board.setBoard(data.board);
+  board.turn = data.currentTurn;
+  board.inCheck = !!data.inCheck;
+  board.lastMove = data.lastMove || null;
+  if (data.castling) board.castling = data.castling;
+  board.enPassant = data.enPassant || null;
+  if (data.players && data.players.length >= 2) {
+    for (var i = 0; i < data.players.length; i++) {
+      if (data.players[i].color !== myColor) oppName = data.players[i].name;
+    }
+  }
+  toast('\u5df2\u91cd\u8fde\u5bf9\u5c40');
+});
+
+socket.on('reconnect_failed', function() {
+  reconnectToken = '';
+  overMsg = '\u5bf9\u5c40\u5df2\u7ed3\u675f\u6216\u623f\u95f4\u5931\u6548';
+  state = 'menu';
+});
+
+socket.on('opponent_status', function(data) {
+  if (data.status === 'disconnected') {
+    toast('\u5bf9\u624b\u7f51\u7edc\u65ad\u5f00\uff0c\u7b49\u5f85\u91cd\u8fde...');
+  } else if (data.status === 'reconnected') {
+    toast('\u5bf9\u624b\u5df2\u91cd\u8fde');
   }
 });
 
@@ -210,8 +295,11 @@ socket.on('move_made', function(data) {
   board.turn = data.currentTurn;
   board.lastMove = data.move;
   board.inCheck = data.inCheck;
+  if (data.castling) board.castling = data.castling;
+  board.enPassant = data.enPassant || null;
   board.deselect();
   if (data.gameOver) {
+    reconnectToken = '';
     setTimeout(function() {
       if (data.result === 'checkmate') {
         overMsg = data.winner === myColor ? '\u4f60\u8d62\u4e86\uff01' : '\u4f60\u8f93\u4e86\uff01';
@@ -220,17 +308,41 @@ socket.on('move_made', function(data) {
       }
       state = 'menu';
     }, 800);
+    socket.send({ type: 'leave_room' });
   }
 });
 
+socket.on('game_over', function(data) {
+  reconnectToken = '';
+  if (data.reason === 'resign') {
+    overMsg = data.winner === myColor ? '\u5bf9\u624b\u8ba4\u8f93\u4e86\uff0c\u4f60\u8d62\u4e86\uff01' : '\u4f60\u8ba4\u8f93\u4e86\uff0c\u4f60\u8f93\u4e86\uff01';
+  } else if (data.reason === 'disconnect') {
+    overMsg = '\u5bf9\u624b\u65ad\u5f00\u8fde\u63a5\uff0c\u4f60\u8d62\u4e86\uff01';
+  } else if (data.winner === myColor) {
+    overMsg = '\u5bf9\u624b\u79bb\u5f00\u4e86\uff0c\u4f60\u8d62\u4e86\uff01';
+  } else {
+    overMsg = '\u4f60\u79bb\u5f00\u4e86\u5bf9\u5c40';
+  }
+  promoPending = null;
+  promoBtns = [];
+  state = 'menu';
+  socket.send({ type: 'leave_room' });
+});
+
 socket.on('opponent_left', function() {
+  reconnectToken = '';
   overMsg = '\u5bf9\u624b\u79bb\u5f00\u4e86\uff01\u4f60\u8d62\u4e86\uff01';
   state = 'menu';
 });
 
 socket.on('error', function(data) { toast(data.error); });
 socket.on('disconnect', function() {
-  if (state === 'playing') { overMsg = '\u8fde\u63a5\u65ad\u5f00'; state = 'menu'; }
+  if ((state === 'playing' || state === 'waiting') && roomId && reconnectToken) {
+    setTimeout(tryReconnect, 600);
+  } else if (state === 'playing') {
+    overMsg = '\u8fde\u63a5\u65ad\u5f00';
+    state = 'menu';
+  }
 });
 
 module.exports = Main;

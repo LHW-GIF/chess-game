@@ -11,6 +11,8 @@ canvas { background: #B58863; max-width: 100%; height: auto; }
 button { padding: 6px 14px; font-size: 14px; cursor: pointer; }
 input { padding: 5px; font-size: 14px; width: 90px; text-transform: uppercase; }
 #link { font-size: 12px; color: #aaa; word-break: break-all; text-align: center; max-width: 560px; }
+#promotion { display: none; position: fixed; z-index: 2; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 16px; background: #222; border: 2px solid #e94560; text-align: center; }
+#promotion button { min-width: 54px; margin: 4px; font-size: 20px; }
 </style>
 </head>
 <body>
@@ -19,9 +21,17 @@ input { padding: 5px; font-size: 14px; width: 90px; text-transform: uppercase; }
   <input id="inRoom" maxlength="6" placeholder="房间号">
   <button id="btnJoin">加入房间</button>
   <button id="btnResign">认输</button>
+  <button id="btnRetry" style="display:none;">重试连接</button>
 </div>
 <div id="st">连接中...</div>
 <div id="link"></div>
+<div id="promotion">
+  <div>选择升变棋子</div>
+  <button data-piece="queen" title="后">♕</button>
+  <button data-piece="rook" title="车">♖</button>
+  <button data-piece="bishop" title="象">♗</button>
+  <button data-piece="knight" title="马">♘</button>
+</div>
 <canvas id="c"></canvas>
 <script>
 // Render 部署的国际象棋 WebSocket 服务
@@ -40,13 +50,52 @@ var cells = [];
 var turn = 'w';
 var myColor = null;   // 'w' | 'b'
 var roomId = '';
+var reconnectToken = '';
+var castling = { wK: true, wQ: true, bK: true, bQ: true };
+var enPassant = null;
 var sel = null;
 var moves = [];
 var lastM = null;
 var inChk = false;
 var over = false;
+var playing = false;
 var ws = null;
 var connected = false;
+var promoMove = null;
+var lastAction = null;
+var wakeTimer = null;
+var promotionEl = document.getElementById('promotion');
+var retryBtn = document.getElementById('btnRetry');
+
+function saveSession(id, token) {
+  roomId = id || '';
+  reconnectToken = token || '';
+  try {
+    if (roomId && reconnectToken) {
+      sessionStorage.setItem('chess_room_id', roomId);
+      sessionStorage.setItem('chess_reconnect_token', reconnectToken);
+    }
+  } catch (e) {}
+}
+
+function clearStoredSession() {
+  reconnectToken = '';
+  try {
+    sessionStorage.removeItem('chess_room_id');
+    sessionStorage.removeItem('chess_reconnect_token');
+  } catch (e) {}
+}
+
+function loadStoredSession() {
+  try {
+    return {
+      roomId: sessionStorage.getItem('chess_room_id') || '',
+      token: sessionStorage.getItem('chess_reconnect_token') || ''
+    };
+  } catch (e) {
+    return { roomId: '', token: '' };
+  }
+}
 
 var S_w = {K:'\u2654',Q:'\u2655',R:'\u2656',B:'\u2657',N:'\u2658',P:'\u2659'};
 var S_b = {K:'\u265A',Q:'\u265B',R:'\u265C',B:'\u265D',N:'\u265E',P:'\u265F'};
@@ -86,6 +135,7 @@ function rawOk(fr, fc, tr, tc) {
   var p = cells[fr][fc];
   if (!p) return false;
   var t = cells[tr][tc];
+  if (t && t[0] === 'K') return false;
   if (t && t[1] === p[1]) return false;
   var dR = tr - fr, dC = tc - fc, ar = Math.abs(dR), ac = Math.abs(dC);
   var tp = p[0], cl = p[1];
@@ -95,21 +145,50 @@ function rawOk(fr, fc, tr, tc) {
       if (dR === d && !t) return true;
       if (dR === d * 2 && fr === s && !t && !cells[fr + d][fc]) return true;
     }
-    if (ac === 1 && dR === d && t && t[1] !== cl) return true;
+    if (ac === 1 && dR === d) {
+      if (t && t[1] !== cl) return true;
+      if (!t && enPassant && enPassant.r === tr && enPassant.c === tc) {
+        var ep = cells[fr][tc];
+        if (ep && ep[0] === 'P' && ep[1] !== cl) return true;
+      }
+    }
     return false;
   }
   if (tp === 'R') return (dR === 0 || dC === 0) && (ar + ac > 0) && clear(fr, fc, tr, tc);
   if (tp === 'N') return (ar === 2 && ac === 1) || (ar === 1 && ac === 2);
   if (tp === 'B') return ar === ac && ar > 0 && clear(fr, fc, tr, tc);
   if (tp === 'Q') return (dR === 0 || dC === 0 || ar === ac) && (ar + ac > 0) && clear(fr, fc, tr, tc);
-  if (tp === 'K') return ar <= 1 && ac <= 1 && (ar + ac > 0);
+  if (tp === 'K') {
+    if (ar <= 1 && ac <= 1 && (ar + ac > 0)) return true;
+    if (dR === 0 && ac === 2 && !t && castling) {
+      var homeRow = cl === 'w' ? 7 : 0;
+      var opp = cl === 'w' ? 'b' : 'w';
+      if (fr === homeRow && fc === 4 && tr === homeRow && !att(cells, homeRow, 4, opp)) {
+        if (tc === 6 && castling[cl === 'w' ? 'wK' : 'bK']) {
+          var kr = cells[homeRow][7];
+          if (kr && kr[0] === 'R' && kr[1] === cl && !cells[homeRow][5] && !cells[homeRow][6] &&
+              !att(cells, homeRow, 5, opp) && !att(cells, homeRow, 6, opp)) return true;
+        } else if (tc === 2 && castling[cl === 'w' ? 'wQ' : 'bQ']) {
+          var qr = cells[homeRow][0];
+          if (qr && qr[0] === 'R' && qr[1] === cl && !cells[homeRow][1] && !cells[homeRow][2] && !cells[homeRow][3] &&
+              !att(cells, homeRow, 3, opp) && !att(cells, homeRow, 2, opp)) return true;
+        }
+      }
+    }
+  }
   return false;
 }
 
 function sim(fr, fc, tr, tc) {
   var nb = [];
   for (var r = 0; r < 8; r++) { nb[r] = []; for (var c = 0; c < 8; c++) nb[r][c] = cells[r][c] ? [cells[r][c][0], cells[r][c][1]] : null; }
-  nb[tr][tc] = nb[fr][fc]; nb[fr][fc] = null;
+  var moving = nb[fr][fc];
+  if (moving && moving[0] === 'P' && fc !== tc && !cells[tr][tc]) nb[fr][tc] = null;
+  if (moving && moving[0] === 'K' && Math.abs(tc - fc) === 2) {
+    if (tc === 6) { nb[fr][5] = nb[fr][7]; nb[fr][7] = null; }
+    else if (tc === 2) { nb[fr][3] = nb[fr][0]; nb[fr][0] = null; }
+  }
+  nb[tr][tc] = moving; nb[fr][fc] = null;
   return nb;
 }
 
@@ -128,7 +207,9 @@ function att(board, r, c, by) {
       var p = board[nr][nc];
       if (p) {
         if (p[1] === by) {
-          if (p[0] === 'K' || p[0] === 'Q') return true;
+          var distance = Math.max(Math.abs(nr - r), Math.abs(nc - c));
+          if (p[0] === 'K' && distance === 1) return true;
+          if (p[0] === 'Q') return true;
           if (p[0] === 'B' && ddr !== 0 && ddc !== 0) return true;
           if (p[0] === 'R' && (ddr === 0 || ddc === 0)) return true;
         }
@@ -224,7 +305,7 @@ function refreshStatus() {
 }
 
 cvs.onclick = function(e) {
-  if (!connected || !myColor || over || turn !== myColor) return;
+  if (!connected || !myColor || over || promoMove || turn !== myColor) return;
   var rect = cvs.getBoundingClientRect();
   var scale = cvs.width / rect.width;
   var x = (e.clientX - rect.left) * scale;
@@ -236,6 +317,13 @@ cvs.onclick = function(e) {
   if (sel) {
     for (var i = 0; i < moves.length; i++) {
       if (moves[i][0] === r && moves[i][1] === c) {
+        var movingPiece = cells[sel[0]][sel[1]];
+        if (movingPiece[0] === 'P' && (movingPiece[1] === 'w' ? r === 0 : r === 7)) {
+          promoMove = { fr: sel[0], fc: sel[1], tr: r, tc: c };
+          showPromotion(movingPiece[1]);
+          promotionEl.style.display = 'block';
+          return;
+        }
         send({ type: 'move', fr: sel[0], fc: sel[1], tr: r, tc: c });
         sel = null; moves = [];
         draw();
@@ -255,19 +343,66 @@ cvs.onclick = function(e) {
 };
 
 // ---------- 网络 ----------
+function clearWakeTimer() {
+  if (wakeTimer) {
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
+  }
+}
+
 function connect(onOk) {
   if (connected && ws) { onOk(); return; }
+  if (ws) {
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  retryBtn.style.display = 'none';
   status('连接服务器...');
-  try { ws = new WebSocket(SERVER); } catch (err) { status('连接失败'); return; }
-  ws.onopen = function() { connected = true; onOk(); };
-  ws.onclose = function() {
-    connected = false;
-    if (!over && myColor) { over = true; status('连接断开，对局结束'); }
-    else if (!myColor) status('连接断开');
+  clearWakeTimer();
+  wakeTimer = setTimeout(function() {
+    if (!connected) {
+      status('服务器可能正在从休眠唤醒，首次连接约需 20~40 秒，请耐心等待...');
+      retryBtn.style.display = 'inline-block';
+    }
+  }, 3000);
+  try { ws = new WebSocket(SERVER); } catch (err) {
+    clearWakeTimer();
+    retryBtn.style.display = 'inline-block';
+    status('连接失败，请点击"重试连接"');
+    return;
+  }
+  ws.onopen = function() {
+    clearWakeTimer();
+    retryBtn.style.display = 'none';
+    connected = true;
+    onOk();
   };
-  ws.onerror = function() { status('无法连接服务器（可能正在唤醒，请稍后重试）'); };
+  ws.onclose = function() {
+    clearWakeTimer();
+    connected = false;
+    if (!over && roomId && reconnectToken) {
+      status('网络断开，正在尝试重连...');
+      retryBtn.style.display = 'inline-block';
+      lastAction = function() { attemptReconnect(); };
+      setTimeout(function() {
+        if (!connected && roomId && reconnectToken) attemptReconnect();
+      }, 1000);
+    } else if (!over && myColor) {
+      over = true;
+      status('连接断开，对局结束');
+      resetSession();
+    } else if (!myColor) {
+      retryBtn.style.display = 'inline-block';
+    }
+  };
+  ws.onerror = function() {
+    clearWakeTimer();
+    retryBtn.style.display = 'inline-block';
+    status('无法连接服务器（可能正在唤醒，请点击"重试连接"）');
+  };
   ws.onmessage = function(ev) {
-    var d = JSON.parse(ev.data);
+    var d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
     handle(d);
   };
 }
@@ -276,17 +411,29 @@ function send(msg) {
   if (ws && connected) ws.send(JSON.stringify(msg));
 }
 
+function attemptReconnect() {
+  if (!roomId || !reconnectToken) return;
+  lastAction = function() { attemptReconnect(); };
+  connect(function() {
+    send({ type: 'reconnect', roomId: roomId, token: reconnectToken });
+  });
+}
+
 function handle(d) {
   if (d.type === 'room_created') {
-    roomId = d.roomId;
+    saveSession(d.roomId, d.token);
     myColor = 'w';
+    castling = { wK: true, wQ: true, bK: true, bQ: true };
+    enPassant = null;
     var url = location.origin + location.pathname + '?room=' + roomId;
     linkEl.innerHTML = '房间号：<b>' + roomId + '</b><br>把下面的链接发给朋友：<br>' + url;
     status('等待对手加入...');
   } else if (d.type === 'room_joined') {
     myColor = 'b';
-    roomId = d.roomId;
+    saveSession(d.roomId, d.token);
     setBoard(d.board);
+    castling = d.castling || { wK: true, wQ: true, bK: true, bQ: true };
+    enPassant = d.enPassant || null;
     turn = 'w';
     over = false;
     refreshStatus();
@@ -294,16 +441,56 @@ function handle(d) {
   } else if (d.type === 'game_start') {
     setBoard(d.board);
     turn = colorCode(d.currentTurn);
+    castling = d.castling || { wK: true, wQ: true, bK: true, bQ: true };
+    enPassant = d.enPassant || null;
     over = false;
+    playing = true;
     lastM = null;
     inChk = false;
     sel = null; moves = [];
     linkEl.textContent = roomId ? '房间号：' + roomId : '';
     refreshStatus();
     draw();
-  } else if (d.type === 'move_made') {
+  } else if (d.type === 'reconnected') {
+    saveSession(d.roomId, d.token || reconnectToken);
+    myColor = colorCode(d.color);
+    castling = d.castling || { wK: true, wQ: true, bK: true, bQ: true };
+    enPassant = d.enPassant || null;
+    if (d.status === 'waiting') {
+      playing = false;
+      over = false;
+      var shareUrl = location.origin + location.pathname + '?room=' + roomId;
+      linkEl.innerHTML = '房间号：<b>' + roomId + '</b><br>把下面的链接发给朋友：<br>' + shareUrl;
+      status('已恢复房间，等待对手加入...');
+      return;
+    }
     setBoard(d.board);
     turn = colorCode(d.currentTurn);
+    playing = true;
+    over = false;
+    inChk = !!d.inCheck;
+    lastM = d.lastMove ? [d.lastMove.fr, d.lastMove.fc, d.lastMove.tr, d.lastMove.tc] : null;
+    sel = null; moves = [];
+    linkEl.textContent = roomId ? '房间号：' + roomId : '';
+    refreshStatus();
+    draw();
+  } else if (d.type === 'reconnect_failed') {
+    clearStoredSession();
+    resetSession();
+    status('对局已结束或房间已失效，请重新创建或加入房间');
+  } else if (d.type === 'opponent_status') {
+    if (d.status === 'disconnected') {
+      status('对手网络断开，等待对手重连...');
+    } else if (d.status === 'reconnected') {
+      refreshStatus();
+    }
+  } else if (d.type === 'move_made') {
+    promotionEl.style.display = 'none';
+    promoMove = null;
+    setBoard(d.board);
+    turn = colorCode(d.currentTurn);
+    if (d.castling) castling = d.castling;
+    enPassant = d.enPassant || null;
     lastM = [d.move.fr, d.move.fc, d.move.tr, d.move.tc];
     inChk = !!d.inCheck;
     sel = null; moves = [];
@@ -314,14 +501,21 @@ function handle(d) {
       } else {
         status('逼和，平局');
       }
+      resetSession();
     } else {
       refreshStatus();
     }
     draw();
+  } else if (d.type === 'game_over') {
+    var won = !!d.winner && colorCode(d.winner) === myColor;
+    if (d.reason === 'resign') status(won ? '对方认输，你赢了' : '你认输了，判负');
+    else if (d.reason === 'disconnect') status(won ? '对手断线超时，你赢了' : '连接断开，对局结束');
+    else status(won ? '对手离开，你赢了' : '你离开了对局');
+    resetSession();
   } else if (d.type === 'opponent_left') {
     over = true;
-    status('对手已离开或认输，你赢了');
-    draw();
+    status('对局已结束');
+    resetSession();
   } else if (d.type === 'error') {
     status('错误：' + d.error);
   }
@@ -330,7 +524,10 @@ function handle(d) {
 // ---------- 按钮 ----------
 document.getElementById('btnCreate').onclick = function() {
   if (myColor) return;
-  connect(function() { send({ type: 'create_room', name: '玩家' }); });
+  lastAction = function() {
+    connect(function() { send({ type: 'create_room', name: '玩家' }); });
+  };
+  lastAction();
 };
 
 document.getElementById('btnJoin').onclick = function() {
@@ -340,24 +537,83 @@ document.getElementById('btnJoin').onclick = function() {
 };
 
 document.getElementById('btnResign').onclick = function() {
-  if (!myColor || over) return;
+  if (!myColor || !playing || over) return;
   send({ type: 'resign' });
   over = true;
   status('你认输了');
 };
 
-function joinRoom(id) {
-  connect(function() { send({ type: 'join_room', roomId: id, name: '玩家' }); });
+retryBtn.onclick = function() {
+  if (lastAction) lastAction();
+  else if (roomId && reconnectToken) attemptReconnect();
+  else {
+    var inputId = document.getElementById('inRoom').value.trim().toUpperCase();
+    if (inputId) joinRoom(inputId);
+    else document.getElementById('btnCreate').onclick();
+  }
+};
+
+var promotionButtons = promotionEl.getElementsByTagName('button');
+for (var pi = 0; pi < promotionButtons.length; pi++) {
+  promotionButtons[pi].onclick = function() {
+    if (!promoMove) return;
+    send({ type: 'move', fr: promoMove.fr, fc: promoMove.fc, tr: promoMove.tr, tc: promoMove.tc, promo: this.getAttribute('data-piece') });
+    promoMove = null;
+    promotionEl.style.display = 'none';
+    sel = null;
+    moves = [];
+    draw();
+  };
 }
 
-// 通过链接 ?room=XXXX 自动加入
+function showPromotion(color) {
+  var symbols = color === 'w' ? S_w : S_b;
+  var codes = ['Q', 'R', 'B', 'N'];
+  for (var i = 0; i < promotionButtons.length; i++) promotionButtons[i].textContent = symbols[codes[i]];
+}
+
+function resetSession() {
+  clearStoredSession();
+  send({ type: 'leave_room' });
+  myColor = null;
+  roomId = '';
+  castling = { wK: true, wQ: true, bK: true, bQ: true };
+  enPassant = null;
+  over = false;
+  playing = false;
+  sel = null;
+  moves = [];
+  promoMove = null;
+  promotionEl.style.display = 'none';
+  linkEl.textContent = '';
+  document.getElementById('inRoom').value = '';
+  draw();
+}
+
+function joinRoom(id) {
+  var stored = loadStoredSession();
+  var token = stored.roomId === id ? stored.token : '';
+  lastAction = function() {
+    connect(function() { send({ type: 'join_room', roomId: id, name: '玩家', token: token }); });
+  };
+  lastAction();
+}
+
+// 通过链接 ?room=XXXX 自动加入或恢复上一局会话
 (function() {
+  var stored = loadStoredSession();
   var m = /[?&]room=([^&]+)/.exec(location.search);
   if (m) {
     var id = decodeURIComponent(m[1]).toUpperCase();
     document.getElementById('inRoom').value = id;
     status('正在加入房间 ' + id + '...');
     joinRoom(id);
+  } else if (stored.roomId && stored.token) {
+    roomId = stored.roomId;
+    reconnectToken = stored.token;
+    document.getElementById('inRoom').value = roomId;
+    status('正在恢复房间 ' + roomId + '...');
+    attemptReconnect();
   } else {
     status('点击"创建房间"开始，或输入房间号加入');
   }

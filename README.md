@@ -1,34 +1,83 @@
-# 示例游戏
+# 国际象棋联机
 
-示例相关说明查阅[新手教程](https://developers.weixin.qq.com/minigame/dev/guide/develop/start.html)
+一个由个人维护的国际象棋联机项目，包含微信小游戏客户端、浏览器客户端和 Node.js WebSocket 服务端。服务端负责房间管理与走棋校验。
 
-## 源码目录介绍
+- 浏览器试玩：<https://lhw-gif.github.io/chess-game/>
+- GitHub 仓库：<https://github.com/LHW-GIF/chess-game>
+- 联机服务：`wss://chess-online-server-popz.onrender.com`
 
+## 项目结构
+
+```text
+├── game.js                 # 微信小游戏入口
+├── game.json               # 小游戏运行配置
+├── project.config.json     # 微信开发者工具项目配置
+├── index.html               # 浏览器联机版
+├── js/
+│   ├── main.js              # 小游戏主流程、界面与网络消息
+│   ├── board.js             # 小游戏棋盘状态与本地走法提示
+│   ├── renderer.js          # Canvas 棋盘和界面绘制
+│   └── socket.js            # 小游戏 WebSocket 客户端
+└── server/
+    ├── server.js            # WebSocket 服务端与规则校验
+    ├── test.js              # 双客户端联机冒烟测试
+    └── package.json          # 服务端依赖（ws）
 ```
-├── audio                                      // 音频资源
-├── images                                     // 图片资源
-├── js
-│   ├── base
-│   │   ├── animatoin.js                       // 帧动画的简易实现
-│   │   ├── pool.js                            // 对象池的简易实现
-│   │   └── sprite.js                          // 游戏基本元素精灵类
-│   ├── libs
-│   │   └── tinyemitter.js                     // 事件监听和触发
-│   ├── npc
-│   │   └── enemy.js                           // 敌机类
-│   ├── player
-│   │   ├── bullet.js                          // 子弹类
-│   │   └── index.js                           // 玩家类
-│   ├── runtime
-│   │   ├── background.js                      // 背景类
-│   │   ├── gameinfo.js                        // 用于展示分数和结算界面
-│   │   └── music.js                           // 全局音效管理器
-│   ├── databus.js                             // 管控游戏状态
-│   ├── main.js                                // 游戏入口主函数
-│   └── render.js                              // 基础渲染信息
-├── .eslintrc.js                               // 代码规范
-├── game.js                                    // 游戏逻辑主入口
-├── game.json                                  // 游戏运行时配置
-├── project.config.json                        // 项目配置
-└── project.private.config.json                // 项目个人配置
+
+仓库中的 `images/` 和 `js/runtime/` 是旧模板遗留资源，不参与当前国际象棋游戏运行。
+
+## 在线游玩
+
+打开[浏览器联机版](https://lhw-gif.github.io/chess-game/)，点击“创建房间”，再把生成的房间链接发给另一位玩家。对方打开链接后会自动加入；也可以输入房间号加入。黑白方通过同一 WebSocket 服务进行联机。
+
+服务端部署在 Render，空闲一段时间后可能休眠，因此首次连接可能需要等待服务唤醒。房间和棋局只保存在服务端内存中，服务重启后无法恢复。
+
+## 本地开发
+
+### 微信小游戏
+
+1. 使用微信开发者工具导入仓库。
+2. 启动本地服务端（见下节）。
+3. 在微信开发者工具中编译和运行小游戏。
+
+小游戏客户端当前连接地址在 `js/socket.js` 中配置为 `ws://localhost:43879`，用于本地开发。部署到其他环境时，需要将其改为对应的 WebSocket 地址，并按微信小游戏平台要求配置合法通信域名。
+
+### 启动服务端
+
+需要安装 Node.js。在仓库根目录运行：
+
+```bash
+cd server
+npm install
+node server.js
 ```
+
+服务端默认监听 `43879` 端口，也可以通过 `PORT` 环境变量指定端口。启动后可通过 HTTP 请求检查服务是否运行，正常时会返回 `Chess Server OK`。
+
+### 运行联机测试
+
+保持服务端运行，在另一个终端执行：
+
+```bash
+cd server
+node test.js
+```
+
+测试包含规则回归和双客户端联机流程：检查王的攻击范围、自王安全提示、升变、王车易位、吃过路兵、逼和、将杀及结束后禁走，并验证房间创建、异常消息、e2-e4 / e7-e5、断线重连、认输结果和再次开局。它不替代微信开发者工具与浏览器中的完整 UI 对局回归。
+
+## 规则与当前限制
+
+- 服务端验证棋步；客户端本地规则只用于显示可走位置提示。
+- 已支持基本棋子走法、吃子、王车易位、吃过路兵、不能送将、将军、将杀和逼和判断。
+- 客户端提供升变选择；未指定时服务端默认升变为后。
+- 支持断线重连（默认 30 秒宽限期，超时判负）；浏览器端支持刷新页面恢复未结束房间。
+- 服务端房间状态保存在内存中，服务实例重启或休眠恢复后房间会丢失。
+- 浏览器客户端本地走法提示与服务端规则分别实现；服务端判定为最终结果。
+
+## 技术说明
+
+- 微信小游戏使用 `wx.createCanvas()` 和 ES5 语法，项目配置关闭 ES6 转译。
+- 浏览器客户端为独立的 `index.html`，通过 WebSocket 连接线上服务。
+- 服务端使用 Node.js 和 `ws`，默认端口为 `43879`。
+
+更多开发记录和已知事项见 [DEVLOG.md](DEVLOG.md)。

@@ -1,39 +1,65 @@
 function Socket() {
   this.ws = null;
   this.connected = false;
+  this.connecting = false;
   this.handlers = {};
   this.url = 'ws://localhost:43879';
 }
 
 Socket.prototype.connect = function(onOk, onErr) {
   var self = this;
+  if (this.connected && this.ws) {
+    if (onOk) onOk();
+    return;
+  }
+  if (this.ws) {
+    try { this.ws.close({}); } catch (e) {}
+    this.ws = null;
+  }
+  this.connecting = true;
   this.ws = wx.connectSocket({ url: this.url });
   var done = false;
+  var timer = setTimeout(function() {
+    if (!done) {
+      done = true;
+      self.connecting = false;
+      if (onErr) onErr('timeout');
+    }
+  }, 10000);
 
   this.ws.onOpen(function() {
+    clearTimeout(timer);
     self.connected = true;
+    self.connecting = false;
     console.log('connected to server');
-    if (!done) { done = true; onOk(); }
+    if (!done) {
+      done = true;
+      if (onOk) onOk();
+    }
   });
 
   this.ws.onMessage(function(msg) {
-    var data = JSON.parse(msg.data);
+    var data;
+    try { data = JSON.parse(msg.data); } catch (e) { return; }
     if (data.type === 'connected') self.playerId = data.playerId;
     self.emit(data.type, data);
   });
 
   this.ws.onClose(function() {
+    clearTimeout(timer);
     self.connected = false;
+    self.connecting = false;
     self.emit('disconnect', {});
   });
 
   this.ws.onError(function() {
-    if (!done) { done = true; onErr('cannot connect'); }
+    clearTimeout(timer);
+    self.connecting = false;
+    if (!done) {
+      done = true;
+      if (onErr) onErr('cannot connect');
+    }
   });
-
-  setTimeout(function() {
-    if (!done) { done = true; onErr('timeout'); }
-  }, 5000);
 };
 
 Socket.prototype.send = function(msg) {
