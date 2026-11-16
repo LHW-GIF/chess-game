@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>微信语音能力检测</title>
+<style>
+body{margin:0;padding:16px;background:#1e1e1e;color:#eee;font:16px/1.6 -apple-system,sans-serif}
+h1{font-size:20px;margin:0 0 8px}
+p.tip{font-size:13px;color:#aaa;margin:0 0 12px}
+pre{white-space:pre-wrap;word-break:break-all;background:#2b2b2b;padding:12px;border-radius:8px;font:14px/1.6 monospace;margin:8px 0}
+button{padding:12px 18px;font-size:17px;border:0;border-radius:8px;background:#e94560;color:#fff}
+</style>
+</head>
+<body>
+<h1>微信浏览器语音能力检测</h1>
+<p class="tip">在微信里打开本页，点下面的按钮，把结果截图发回。</p>
+<pre id="out">检测中...</pre>
+<button id="btnMic">测试麦克风</button>
+<pre id="log">尚未测试麦克风</pre>
+<script>
+(function(){
+  var out=document.getElementById('out'), log=document.getElementById('log'), lines=[];
+  function add(k,v){lines.push(k+': '+v);out.textContent=lines.join('\n');}
+  var secure = window.isSecureContext === true || location.protocol === 'https:' || location.hostname === 'localhost';
+  add('时间', new Date().toLocaleString());
+  add('UA', navigator.userAgent);
+  add('是否微信', /MicroMessenger/i.test(navigator.userAgent) ? '是' : '否');
+  add('HTTPS/localhost', secure ? '是' : '否');
+  add('页面地址', location.href);
+  add('mediaDevices', navigator.mediaDevices ? '有' : '无');
+  add('getUserMedia', (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ? '有' : '无');
+  add('AudioContext', (window.AudioContext || window.webkitAudioContext) ? '有' : '无');
+  add('WebSocket', window.WebSocket ? '有' : '无');
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var c = new AC();
+    add('音频上下文状态', c.state);
+    c.close();
+  } catch(e) { add('音频上下文状态', '失败:' + e.message); }
+  document.getElementById('btnMic').onclick = function(){
+    log.textContent = '请求中…请在弹窗里点允许';
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        log.textContent = '失败：浏览器没有 getUserMedia';
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(function(stream){
+        var t = stream.getAudioTracks()[0];
+        log.textContent = '成功：拿到麦克风，轨道=' + (t ? t.readyState : '无') + '，设备=' + (t ? t.label : '无');
+        stream.getTracks().forEach(function(x){ x.stop(); });
+      }, function(err){
+        log.textContent = '失败：' + (err && err.name) + ' ' + (err && err.message);
+      });
+    } catch(e) { log.textContent = '异常：' + e.message; }
+  };
+})();
+</script>
+</body>
+</html>
