@@ -89,22 +89,15 @@ async function run() {
   await until(b, "document.getElementById('whisperInbox').textContent.indexOf('next game secret')>=0");
   await until(a, "Object.keys(JSON.parse(localStorage.getItem('chess_whispers_pending'))).length === 0");
   // Delivered notes survive reload and are acknowledged only after recipient storage succeeds.
-  await evaluate(b, "localStorage.setItem('chess_daily_reminder', JSON.stringify({enabled:true,time:'00:00',last:''}))");
   await command('Page.reload', {}, b);
   await until(b, "typeof social !== 'undefined' && document.getElementById('whisperInbox').textContent.indexOf('next game secret')>=0");
-  await until(b, "playing && document.getElementById('reminderHint').textContent.indexOf('今日一局：')>=0");
-  await evaluate(a, "document.getElementById('btnReminder').click()");
-  assert.strictEqual(await evaluate(a, "JSON.parse(localStorage.getItem('chess_daily_reminder')).enabled"), true);
-  await evaluate(a, "document.getElementById('btnReminder').click()");
-  // Capture the calendar Blob instead of triggering a download.
-  await evaluate(a, "window.calendarText=''; URL.createObjectURL=function(blob){blob.text().then(function(t){window.calendarText=t});return 'blob:test'};document.getElementById('btnCalendar').click()");
-  await until(a, "calendarText.indexOf('RRULE:FREQ=DAILY')>=0 && calendarText.indexOf('BEGIN:VALARM')>=0");
+  await until(b, "playing");
   const capture = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, a);
   fs.writeFileSync('/tmp/chess-social-desktop.png', Buffer.from(capture.data,'base64'));
   const mobile = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, b);
   fs.writeFileSync('/tmp/chess-social-mobile.png', Buffer.from(mobile.data,'base64'));
   for (const context of contexts) await command('Target.disposeBrowserContext', { browserContextId: context });
-  console.log('Browser UI passed: desktop/mobile layout below board, safe uncensored chat, unread badge/quick replies, WebRTC connected/mute/hangup, next-game notes/persistence/ack, reminder settings/calendar');
+  console.log('Browser UI passed: desktop/mobile layout below board, safe uncensored chat, unread badge/quick replies, WebRTC connected/mute/hangup, next-game notes/persistence/ack');
 }
 run().then(() => { browser.close(); process.exit(0); }).catch(err => { console.error(err); if (browser) browser.close(); process.exit(1); });
 setTimeout(() => {console.error('Browser test timed out');process.exit(1)},90000);

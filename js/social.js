@@ -229,66 +229,6 @@ window.ChessSocial = function(options) {
   window.addEventListener('pagehide', function() { endCall('', true); });
   voiceButtons();
 
-  var reminder = read('chess_daily_reminder', { enabled: false, time: '20:00', last: '' });
-  el('reminderTime').value = reminder.time;
-  var reminderHint = el('reminderHint');
-  function reminderLabel() { el('btnReminder').textContent = reminder.enabled ? '\u5173\u95ed\u6bcf\u65e5\u63d0\u9192' : '\u5f00\u542f\u6bcf\u65e5\u63d0\u9192'; }
-  function dateKey(d) { return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
-  function checkReminder() {
-    if (!reminder.enabled) return;
-    var now = new Date(), time = reminder.time.split(':');
-    var minutes = now.getHours() * 60 + now.getMinutes();
-    if (minutes < Number(time[0]) * 60 + Number(time[1]) || reminder.last === dateKey(now)) return;
-    reminder.last = dateKey(now); write('chess_daily_reminder', reminder);
-    reminderHint.textContent = '\u4eca\u65e5\u4e00\u5c40\uff1a\u5230\u7ea6\u5b9a\u7684\u65f6\u95f4\u4e86\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u5427\uff01';
-    if ('Notification' in window && Notification.permission === 'granted') {
-      try { new Notification('\u4eca\u65e5\u4e00\u5c40', { body: '\u5230\u7ea6\u5b9a\u7684\u65f6\u95f4\u4e86\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u5427\uff01', tag: 'chess-daily' }); } catch (e) {}
-    }
-  }
-  function firstReminderDay() {
-    var now = new Date(), time = reminder.time.split(':');
-    return now.getHours() * 60 + now.getMinutes() >= Number(time[0]) * 60 + Number(time[1]) ? dateKey(now) : '';
-  }
-  el('btnReminder').onclick = function() {
-    reminder.enabled = !reminder.enabled;
-    reminder.time = el('reminderTime').value || '20:00';
-    // If today's selected time has passed, begin tomorrow.
-    reminder.last = firstReminderDay();
-    if (!write('chess_daily_reminder', reminder)) reminderHint.textContent = '\u65e0\u6cd5\u4fdd\u5b58\u8bbe\u7f6e\uff0c\u672c\u6b21\u6253\u5f00\u671f\u95f4\u6709\u6548';
-    else reminderHint.textContent = reminder.enabled ? '\u7f51\u9875\u4fdd\u6301\u6253\u5f00\u65f6\u6bcf\u5929\u63d0\u9192\uff1b\u5173\u95ed\u7f51\u9875\u540e\u8bf7\u4f7f\u7528\u65e5\u5386\u63d0\u9192' : '\u6bcf\u65e5\u7f51\u9875\u63d0\u9192\u5df2\u5173\u95ed';
-    reminderLabel();
-    if (reminder.enabled && 'Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission().catch(function() {});
-    }
-  };
-  el('reminderTime').onchange = function() {
-    reminder.time = this.value || '20:00'; reminder.last = firstReminderDay(); write('chess_daily_reminder', reminder);
-    reminderHint.textContent = '\u65f6\u95f4\u5df2\u66f4\u65b0\uff0c\u5c06\u5728\u4e0b\u4e00\u4e2a\u7ea6\u5b9a\u65f6\u95f4\u63d0\u9192';
-  };
-  function pad(n) { return ('0' + n).slice(-2); }
-  function calendarStamp(d) { return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + 'T' + pad(d.getHours()) + pad(d.getMinutes()) + '00'; }
-  el('btnCalendar').onclick = function() {
-    var time = (el('reminderTime').value || '20:00').split(':'), date = new Date();
-    date.setHours(Number(time[0]), Number(time[1]), 0, 0);
-    if (date <= new Date()) date.setDate(date.getDate() + 1);
-    var end = new Date(date.getTime() + 30 * 60000);
-    var text = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Chess Online//Daily Game//ZH','BEGIN:VEVENT',
-      'UID:chess-daily-' + identity + '@chess-online',
-      'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''),
-      'DTSTART:' + calendarStamp(date),'DTEND:' + calendarStamp(end),'RRULE:FREQ=DAILY',
-      'SUMMARY:\u4eca\u65e5\u4e00\u5c40', 'DESCRIPTION:\u6253\u5f00\u56fd\u9645\u8c61\u68cb\u7f51\u9875\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u3002',
-      'URL:https://lhw-gif.github.io/chess-game/', 'BEGIN:VALARM','TRIGGER:PT0M','ACTION:DISPLAY',
-      'DESCRIPTION:\u4eca\u65e5\u4e00\u5c40','END:VALARM','END:VEVENT','END:VCALENDAR',''].join('\r\n');
-    var url = URL.createObjectURL(new Blob([text], { type: 'text/calendar;charset=utf-8' }));
-    var link = document.createElement('a'); link.href = url; link.download = 'chess-daily.ics';
-    document.body.appendChild(link); link.click(); link.remove();
-    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    reminderHint.textContent = '\u8bf7\u628a\u4e0b\u8f7d\u7684\u65e5\u5386\u6587\u4ef6\u5bfc\u5165\u624b\u673a\u6216\u7535\u8111\u65e5\u5386\uff0c\u5e76\u5141\u8bb8\u65e5\u5386\u901a\u77e5';
-  };
-  reminderLabel(); setInterval(checkReminder, 15000);
-  document.addEventListener('visibilitychange', function() { if (!document.hidden) checkReminder(); });
-  checkReminder();
-
   return {
     identity: identity,
     room: function(id) {

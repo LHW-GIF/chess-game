@@ -166,10 +166,6 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div class="row"><label>用户名 <input id="turnUser" autocomplete="off"></label><label>密码 <input id="turnPassword" type="password" autocomplete="off"></label></div>
     </details>
   </details>
-  <details><summary>今日一局 · 每日提醒</summary>
-    <div class="row"><label>每天 <input id="reminderTime" type="time" value="20:00"></label><button id="btnReminder">开启每日提醒</button><button id="btnCalendar">添加到手机 / 电脑日历</button></div>
-    <p id="reminderHint" class="social-hint" role="status">网页打开时可提醒；希望关闭网页后也收到提醒，请下载并导入日历。</p>
-  </details>
   <details id="whisperDetails"><summary>赛后悄悄话</summary>
     <div id="noteComposer" hidden>
       <label for="noteInput">给刚才的对手留一句话，下次彼此开局时再看到</label>
@@ -218,7 +214,7 @@ button:disabled { opacity: 0.5; cursor: default; }
     </div>
   </div>
 </div>
-<script src="js/social.js"></script>
+<script src="js/social.js?v=20261116-no-reminder"></script>
 <script>
 // Render 部署的国际象棋 WebSocket 服务
 var SERVER = 'wss://chess-online-server-popz.onrender.com';
