@@ -88,14 +88,25 @@ Renderer.prototype.drawPiece = function(r, c, piece) {
   var ctx = this.ctx;
   var x = this.ox + c * this.cell + this.cell / 2;
   var y = this.oy + this.dr(r) * this.cell + this.cell / 2;
-  var sym = SYMBOLS[piece.color][piece.type];
+  var isWhite = piece.color === 'white';
+  var sym = SYMBOLS.black[piece.type];
+  ctx.save();
   ctx.font = (this.cell * 0.7) + 'px serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#000';
-  ctx.fillText(sym, x + 1, y + 1);
-  ctx.fillStyle = piece.color === 'white' ? '#fff' : '#333';
+  if (isWhite) {
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(2, this.cell * 0.06);
+    ctx.strokeStyle = '#1f1f1f';
+    ctx.strokeText(sym, x, y);
+    ctx.fillStyle = '#fff';
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.fillText(sym, x + 1, y + 1);
+    ctx.fillStyle = '#333';
+  }
   ctx.fillText(sym, x, y);
+  ctx.restore();
 };
 
 Renderer.prototype.drawCoords = function(board) {

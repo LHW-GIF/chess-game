@@ -14,6 +14,7 @@
 - [x] 复盘：Stockfish 10 WASM 打包在 `engine/`，实时评估条、棋谱列表、逐步跳转、整局分析。
 - [x] 推演：副棋盘自由走子、重置/撤销、引擎评估；升变默认变后。
 - [x] 对局历史：服务端 `move_made` / `undo_result` / `reconnected` 提供 `moveCount`，走棋记录提供 `promotion`。
+- [x] 白子明显化：白子改用实心棋子字形 + 深色描边，浅色格上也清晰可辨，与黑子一致（网页端 `index.html` 与小游戏端 `js/renderer.js` 均已修复）。
 
 ## 复盘与学习
 

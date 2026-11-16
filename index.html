@@ -589,15 +589,24 @@ function cloneEP(ep) { return ep ? { r: ep.r, c: ep.c } : null; }
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
 function paintPiece(c, p, x, y, size, alpha) {
-  var sym = p[1] === 'w' ? S_w[p[0]] : S_b[p[0]];
+  var isWhite = p[1] === 'w';
+  var sym = S_b[p[0]];
   c.save();
   c.globalAlpha = alpha == null ? 1 : alpha;
   c.font = size + 'px serif';
   c.textAlign = 'center';
   c.textBaseline = 'middle';
-  c.fillStyle = '#000';
-  c.fillText(sym, x + 1, y + 1);
-  c.fillStyle = p[1] === 'w' ? '#fff' : '#333';
+  if (isWhite) {
+    c.lineJoin = 'round';
+    c.lineWidth = Math.max(2, size * 0.09);
+    c.strokeStyle = '#1f1f1f';
+    c.strokeText(sym, x, y);
+    c.fillStyle = '#fff';
+  } else {
+    c.fillStyle = '#000';
+    c.fillText(sym, x + 1, y + 1);
+    c.fillStyle = '#333';
+  }
   c.fillText(sym, x, y);
   c.restore();
 }
