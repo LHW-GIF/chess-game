@@ -1,0 +1,336 @@
+/* Browser social controls; ES5 syntax, independent of the mini-game client. */
+window.ChessSocial = function(options) {
+  function el(id) { return document.getElementById(id); }
+  function read(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch (e) { return fallback; }
+  }
+  function write(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+  }
+  function randomId() {
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    var out = '';
+    for (var i = 0; i < bytes.length; i++) out += ('0' + bytes[i].toString(16)).slice(-2);
+    return out;
+  }
+  var identity = read('chess_social_identity', '');
+  if (!/^[a-f0-9]{32}$/.test(identity)) { identity = randomId(); write('chess_social_identity', identity); }
+  var panel = el('chatPanel'), messages = el('chatMessages'), input = el('chatInput');
+  var hint = el('chatHint'), badge = el('chatBadge'), unread = 0, opened = false;
+  var peerId = '', lastPeerId = '', room = '', ended = false;
+  var pending = read('chess_whispers_pending', {}), inbox = read('chess_whispers_inbox', []);
+  var noteHint = el('noteHint');
+  function state() { return options.state(); }
+  function canChat() { return state().connected && !!state().roomId; }
+  function addMessage(text, self, who) {
+    var row = document.createElement('div');
+    row.className = 'chat-msg ' + (self ? 'self' : 'other');
+    var name = document.createElement('span');
+    name.className = 'who'; name.textContent = who;
+    row.appendChild(name); row.appendChild(document.createTextNode(text));
+    messages.appendChild(row);
+    while (messages.children.length > 150) messages.removeChild(messages.firstChild);
+    if (!self && !opened) { unread++; badge.textContent = unread > 99 ? '99+' : unread; badge.className = 'show'; }
+    if (opened) messages.scrollTop = messages.scrollHeight;
+  }
+  function toggle(value) {
+    opened = value; panel.className = value ? 'show' : '';
+    el('btnChatToggle').setAttribute('aria-expanded', String(value));
+    if (value) { unread = 0; badge.className = ''; messages.scrollTop = messages.scrollHeight; }
+  }
+  function sendChat(text) {
+    if (!canChat()) { hint.textContent = '\u8bf7\u5148\u521b\u5efa\u6216\u52a0\u5165\u623f\u95f4\uff0c\u8fde\u63a5\u6062\u590d\u540e\u518d\u53d1\u9001'; return; }
+    text = text.replace(/^\s+|\s+$/g, '');
+    if (!text) { hint.textContent = '\u8bf7\u8f93\u5165\u6d88\u606f'; return; }
+    if (text.length > 200) { hint.textContent = '\u6d88\u606f\u6700\u591a 200 \u5b57'; return; }
+    options.send({ type: 'chat', text: text });
+    hint.textContent = '\u5df2\u53d1\u9001\uff0c\u7b49\u5f85\u670d\u52a1\u5668\u786e\u8ba4';
+  }
+  el('btnChatToggle').onclick = function() { toggle(!opened); };
+  el('btnChatClose').onclick = function() { toggle(false); };
+  el('btnChatSend').onclick = function() { sendChat(input.value); };
+  input.onkeydown = function(e) {
+    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(input.value); }
+  };
+  el('chatQuick').onclick = function(e) {
+    var text = e.target.getAttribute('data-phrase');
+    if (text) sendChat(text);
+  };
+  function renderInbox() {
+    var list = el('whisperInbox'); list.textContent = '';
+    inbox.slice(-20).forEach(function(note) {
+      var row = document.createElement('p'); row.textContent = note.text; list.appendChild(row);
+    });
+  }
+  renderInbox();
+  el('btnSaveNote').onclick = function() {
+    var text = el('noteInput').value.replace(/^\s+|\s+$/g, '');
+    if (!ended || !lastPeerId) { noteHint.textContent = '\u7ed3\u675f\u4e00\u5c40\u540e\u53ef\u4ee5\u7ed9\u521a\u624d\u7684\u5bf9\u624b\u7559\u8a00'; return; }
+    if (!text || text.length > 200) { noteHint.textContent = '\u8bf7\u8f93\u5165 1 \u81f3 200 \u5b57'; return; }
+    var previous = pending[lastPeerId];
+    pending[lastPeerId] = { id: randomId(), text: text };
+    if (!write('chess_whispers_pending', pending)) {
+      if (previous) pending[lastPeerId] = previous; else delete pending[lastPeerId];
+      noteHint.textContent = '\u6d4f\u89c8\u5668\u65e0\u6cd5\u4fdd\u5b58\uff0c\u8bf7\u5141\u8bb8\u672c\u7ad9\u5b58\u50a8\u540e\u91cd\u8bd5'; return;
+    }
+    el('noteInput').value = '';
+    noteHint.textContent = '\u5df2\u4fdd\u5b58\u5728\u6b64\u6d4f\u89c8\u5668\uff0c\u4e0b\u6b21\u4e0e\u8fd9\u4f4d\u5bf9\u624b\u5f00\u5c40\u65f6\u9001\u8fbe\uff08\u518d\u6b21\u4fdd\u5b58\u4f1a\u8986\u76d6\uff09';
+  };
+  el('btnDeleteNote').onclick = function() {
+    if (!lastPeerId) return;
+    var previous = pending[lastPeerId]; delete pending[lastPeerId];
+    if (!write('chess_whispers_pending', pending)) { pending[lastPeerId] = previous; noteHint.textContent = '\u5220\u9664\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5'; return; }
+    noteHint.textContent = '\u5df2\u53d6\u6d88\u5f85\u9001\u8fbe\u7559\u8a00';
+  };
+
+  // A request/accept handshake prevents simultaneous offers and unsolicited microphone capture.
+  var callId = '', pc = null, stream = null, incoming = false, candidates = [], epoch = 0, callTimer = null;
+  var voiceHint = el('voiceHint'), remote = el('remoteAudio');
+  function signal(action, extra) {
+    var data = { type: 'voice', action: action, callId: callId };
+    if (extra) for (var key in extra) if (Object.prototype.hasOwnProperty.call(extra, key)) data[key] = extra[key];
+    options.send(data);
+  }
+  function voiceButtons() {
+    el('btnVoice').disabled = !!callId;
+    el('btnVoiceAccept').hidden = !incoming;
+    el('btnVoiceReject').hidden = !incoming;
+    el('btnVoiceHangup').hidden = !callId;
+    el('btnVoiceMute').disabled = !stream;
+  }
+  function endCall(text, notify) {
+    if (notify && callId) signal('hangup');
+    epoch++; clearTimeout(callTimer); callId = ''; incoming = false; candidates = [];
+    if (pc) { pc.onconnectionstatechange = null; pc.onicecandidate = null; pc.close(); pc = null; }
+    if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
+    remote.srcObject = null; el('btnVoicePlay').hidden = true;
+    el('btnVoiceMute').textContent = '\u9759\u97f3';
+    voiceHint.textContent = text || '\u8bed\u97f3\u5df2\u7ed3\u675f'; voiceButtons();
+  }
+  function voiceError(err) {
+    var text = err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') ?
+      '\u9ea6\u514b\u98ce\u672a\u83b7\u6388\u6743\uff0c\u8bf7\u5728\u6d4f\u89c8\u5668\u6743\u9650\u4e2d\u5141\u8bb8\u540e\u91cd\u8bd5' : '\u8bed\u97f3\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\uff1b\u8de8\u7f51\u7edc\u65e0\u6cd5\u8fde\u63a5\u65f6\u53ef\u914d\u7f6e TURN';
+    endCall(text, true);
+  }
+  function iceConfig() {
+    var servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    var url = el('turnUrl').value.trim();
+    if (url) {
+      if (!/^turns?:[^\s]+$/i.test(url)) throw new Error('invalid TURN URL');
+      servers.push({ urls: url, username: el('turnUser').value, credential: el('turnPassword').value });
+    }
+    return { iceServers: servers };
+  }
+  function prepare() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.RTCPeerConnection) {
+      return Promise.reject(new Error('unsupported'));
+    }
+    var stamp = epoch;
+    voiceHint.textContent = '\u6b63\u5728\u8bf7\u6c42\u9ea6\u514b\u98ce\u6743\u9650...';
+    return navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(function(media) {
+      if (stamp !== epoch || !callId) { media.getTracks().forEach(function(t) { t.stop(); }); return false; }
+      stream = media;
+      pc = new RTCPeerConnection(iceConfig());
+      stream.getTracks().forEach(function(t) { pc.addTrack(t, stream); });
+      pc.onicecandidate = function(e) {
+        if (stamp === epoch && e.candidate) signal('ice', { candidate: e.candidate.toJSON() });
+      };
+      pc.ontrack = function(e) {
+        remote.srcObject = e.streams[0];
+        var play = remote.play();
+        if (play && play.catch) play.catch(function() { el('btnVoicePlay').hidden = false; });
+      };
+      pc.onconnectionstatechange = function() {
+        if (!pc || stamp !== epoch) return;
+        if (pc.connectionState === 'connected') {
+          clearTimeout(callTimer); voiceHint.textContent = '\u8bed\u97f3\u5df2\u63a5\u901a';
+        } else if (pc.connectionState === 'failed') voiceError();
+        else if (pc.connectionState === 'disconnected') voiceHint.textContent = '\u8bed\u97f3\u7f51\u7edc\u6682\u65f6\u4e2d\u65ad\uff0c\u6b63\u5728\u6062\u590d...';
+      };
+      voiceButtons(); return true;
+    }).catch(function(err) { if (stamp === epoch) throw err; return false; });
+  }
+  function beginTimer() {
+    clearTimeout(callTimer);
+    callTimer = setTimeout(function() { endCall('\u8bed\u97f3\u8fde\u63a5\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5\u6216\u914d\u7f6e TURN', true); }, 45000);
+  }
+  el('btnVoice').onclick = function() {
+    if (callId) return;
+    if (!state().connected || !state().playing || !peerId) { voiceHint.textContent = '\u53cc\u65b9\u8fdb\u5165\u5bf9\u5c40\u540e\u624d\u80fd\u53d1\u8d77\u8bed\u97f3'; return; }
+    callId = randomId(); incoming = false; voiceButtons(); beginTimer();
+    prepare().then(function(ready) {
+      if (!ready) return;
+      signal('request'); voiceHint.textContent = '\u7b49\u5f85\u5bf9\u65b9\u63a5\u542c...';
+    }).catch(voiceError);
+  };
+  el('btnVoiceAccept').onclick = function() {
+    if (!incoming) return;
+    incoming = false; voiceButtons();
+    prepare().then(function(ready) {
+      if (!ready) return;
+      signal('accept'); voiceHint.textContent = '\u6b63\u5728\u8fde\u63a5\u8bed\u97f3...';
+    }).catch(voiceError);
+  };
+  el('btnVoiceReject').onclick = function() { signal('reject'); endCall('\u5df2\u62d2\u7edd\u8bed\u97f3', false); };
+  el('btnVoiceHangup').onclick = function() { endCall('\u5df2\u6302\u65ad', true); };
+  el('btnVoiceMute').onclick = function() {
+    if (!stream) return;
+    var enabled = !stream.getAudioTracks()[0].enabled;
+    stream.getAudioTracks().forEach(function(t) { t.enabled = enabled; });
+    this.textContent = enabled ? '\u9759\u97f3' : '\u53d6\u6d88\u9759\u97f3';
+  };
+  el('btnVoicePlay').onclick = function() { remote.play().then(function() { el('btnVoicePlay').hidden = true; }).catch(function() {}); };
+  function flushCandidates(connection) {
+    var queue = candidates; candidates = [];
+    return queue.reduce(function(chain, item) {
+      return chain.then(function() { if (connection === pc) return connection.addIceCandidate(item); });
+    }, Promise.resolve());
+  }
+  function handleVoice(d) {
+    if (d.action === 'request') {
+      if (callId || !state().playing) {
+        options.send({ type: 'voice', action: 'reject', callId: d.callId }); return;
+      }
+      callId = d.callId; incoming = true; el('voiceDetails').open = true;
+      voiceHint.textContent = '\u5bf9\u65b9\u9080\u8bf7\u4f60\u8bed\u97f3\uff0c\u63a5\u542c\u540e\u624d\u4f1a\u4f7f\u7528\u9ea6\u514b\u98ce';
+      voiceButtons(); beginTimer(); return;
+    }
+    if (!callId || d.callId !== callId) return;
+    if (d.action === 'hangup' || d.action === 'reject') { endCall('\u5bf9\u65b9\u5df2\u7ed3\u675f\u6216\u672a\u63a5\u542c\u8bed\u97f3', false); return; }
+    var connection = pc, stamp = epoch;
+    var task = Promise.resolve();
+    if (d.action === 'accept' && connection) {
+      voiceHint.textContent = '\u6b63\u5728\u8fde\u63a5\u8bed\u97f3...';
+      task = connection.createOffer().then(function(offer) {
+        if (stamp !== epoch) return;
+        return connection.setLocalDescription(offer).then(function() {
+          if (stamp === epoch) signal('offer', { sdp: offer.sdp });
+        });
+      });
+    } else if (d.action === 'offer' && connection) {
+      task = connection.setRemoteDescription({ type: 'offer', sdp: d.sdp }).then(function() {
+        if (stamp !== epoch) return;
+        return flushCandidates(connection).then(function() { return connection.createAnswer(); }).then(function(answer) {
+          if (stamp !== epoch) return;
+          return connection.setLocalDescription(answer).then(function() {
+            if (stamp === epoch) signal('answer', { sdp: answer.sdp });
+          });
+        });
+      });
+    } else if (d.action === 'answer' && connection) {
+      task = connection.setRemoteDescription({ type: 'answer', sdp: d.sdp }).then(function() { return flushCandidates(connection); });
+    } else if (d.action === 'ice') {
+      if (connection && connection.remoteDescription) task = connection.addIceCandidate(d.candidate);
+      else if (candidates.length < 100) candidates.push(d.candidate);
+    }
+    task.catch(function(err) { if (stamp === epoch) voiceError(err); });
+  }
+  window.addEventListener('pagehide', function() { endCall('', true); });
+  voiceButtons();
+
+  var reminder = read('chess_daily_reminder', { enabled: false, time: '20:00', last: '' });
+  el('reminderTime').value = reminder.time;
+  var reminderHint = el('reminderHint');
+  function reminderLabel() { el('btnReminder').textContent = reminder.enabled ? '\u5173\u95ed\u6bcf\u65e5\u63d0\u9192' : '\u5f00\u542f\u6bcf\u65e5\u63d0\u9192'; }
+  function dateKey(d) { return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  function checkReminder() {
+    if (!reminder.enabled) return;
+    var now = new Date(), time = reminder.time.split(':');
+    var minutes = now.getHours() * 60 + now.getMinutes();
+    if (minutes < Number(time[0]) * 60 + Number(time[1]) || reminder.last === dateKey(now)) return;
+    reminder.last = dateKey(now); write('chess_daily_reminder', reminder);
+    reminderHint.textContent = '\u4eca\u65e5\u4e00\u5c40\uff1a\u5230\u7ea6\u5b9a\u7684\u65f6\u95f4\u4e86\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u5427\uff01';
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { new Notification('\u4eca\u65e5\u4e00\u5c40', { body: '\u5230\u7ea6\u5b9a\u7684\u65f6\u95f4\u4e86\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u5427\uff01', tag: 'chess-daily' }); } catch (e) {}
+    }
+  }
+  function firstReminderDay() {
+    var now = new Date(), time = reminder.time.split(':');
+    return now.getHours() * 60 + now.getMinutes() >= Number(time[0]) * 60 + Number(time[1]) ? dateKey(now) : '';
+  }
+  el('btnReminder').onclick = function() {
+    reminder.enabled = !reminder.enabled;
+    reminder.time = el('reminderTime').value || '20:00';
+    // If today's selected time has passed, begin tomorrow.
+    reminder.last = firstReminderDay();
+    if (!write('chess_daily_reminder', reminder)) reminderHint.textContent = '\u65e0\u6cd5\u4fdd\u5b58\u8bbe\u7f6e\uff0c\u672c\u6b21\u6253\u5f00\u671f\u95f4\u6709\u6548';
+    else reminderHint.textContent = reminder.enabled ? '\u7f51\u9875\u4fdd\u6301\u6253\u5f00\u65f6\u6bcf\u5929\u63d0\u9192\uff1b\u5173\u95ed\u7f51\u9875\u540e\u8bf7\u4f7f\u7528\u65e5\u5386\u63d0\u9192' : '\u6bcf\u65e5\u7f51\u9875\u63d0\u9192\u5df2\u5173\u95ed';
+    reminderLabel();
+    if (reminder.enabled && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(function() {});
+    }
+  };
+  el('reminderTime').onchange = function() {
+    reminder.time = this.value || '20:00'; reminder.last = firstReminderDay(); write('chess_daily_reminder', reminder);
+    reminderHint.textContent = '\u65f6\u95f4\u5df2\u66f4\u65b0\uff0c\u5c06\u5728\u4e0b\u4e00\u4e2a\u7ea6\u5b9a\u65f6\u95f4\u63d0\u9192';
+  };
+  function pad(n) { return ('0' + n).slice(-2); }
+  function calendarStamp(d) { return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + 'T' + pad(d.getHours()) + pad(d.getMinutes()) + '00'; }
+  el('btnCalendar').onclick = function() {
+    var time = (el('reminderTime').value || '20:00').split(':'), date = new Date();
+    date.setHours(Number(time[0]), Number(time[1]), 0, 0);
+    if (date <= new Date()) date.setDate(date.getDate() + 1);
+    var end = new Date(date.getTime() + 30 * 60000);
+    var text = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Chess Online//Daily Game//ZH','BEGIN:VEVENT',
+      'UID:chess-daily-' + identity + '@chess-online',
+      'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''),
+      'DTSTART:' + calendarStamp(date),'DTEND:' + calendarStamp(end),'RRULE:FREQ=DAILY',
+      'SUMMARY:\u4eca\u65e5\u4e00\u5c40', 'DESCRIPTION:\u6253\u5f00\u56fd\u9645\u8c61\u68cb\u7f51\u9875\uff0c\u9080\u8bf7\u670b\u53cb\u4e0b\u4e00\u76d8\u3002',
+      'URL:https://lhw-gif.github.io/chess-game/', 'BEGIN:VALARM','TRIGGER:PT0M','ACTION:DISPLAY',
+      'DESCRIPTION:\u4eca\u65e5\u4e00\u5c40','END:VALARM','END:VEVENT','END:VCALENDAR',''].join('\r\n');
+    var url = URL.createObjectURL(new Blob([text], { type: 'text/calendar;charset=utf-8' }));
+    var link = document.createElement('a'); link.href = url; link.download = 'chess-daily.ics';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    reminderHint.textContent = '\u8bf7\u628a\u4e0b\u8f7d\u7684\u65e5\u5386\u6587\u4ef6\u5bfc\u5165\u624b\u673a\u6216\u7535\u8111\u65e5\u5386\uff0c\u5e76\u5141\u8bb8\u65e5\u5386\u901a\u77e5';
+  };
+  reminderLabel(); setInterval(checkReminder, 15000);
+  document.addEventListener('visibilitychange', function() { if (!document.hidden) checkReminder(); });
+  checkReminder();
+
+  return {
+    identity: identity,
+    room: function(id) {
+      if (room === id) return;
+      room = id; peerId = ''; lastPeerId = ''; ended = false; messages.textContent = ''; unread = 0; badge.className = '';
+      hint.textContent = '\u6d88\u606f\u4ec5\u5728\u672c\u6b21\u623f\u95f4\u5185\u663e\u793a\uff0c\u65ad\u7ebf\u671f\u95f4\u4e0d\u8865\u53d1';
+      el('noteComposer').hidden = true; endCall('\u8fdb\u5165\u5bf9\u5c40\u540e\u53ef\u53d1\u8d77\u8bed\u97f3', true);
+    },
+    end: function() {
+      ended = true; peerId = ''; room = '';
+      el('noteComposer').hidden = !lastPeerId;
+      hint.textContent = '\u5bf9\u5c40\u5df2\u7ed3\u675f\uff0c\u521b\u5efa\u65b0\u623f\u95f4\u540e\u53ef\u4ee5\u7ee7\u7eed\u804a\u5929';
+      endCall('\u5bf9\u5c40\u7ed3\u675f\uff0c\u8bed\u97f3\u5df2\u5173\u95ed', true);
+    },
+    disconnect: function() { endCall('\u7f51\u7edc\u65ad\u5f00\uff0c\u8bed\u97f3\u5df2\u5173\u95ed\uff1b\u91cd\u8fde\u540e\u53ef\u91cd\u65b0\u53d1\u8d77', false); },
+    message: function(d) {
+      if (d.type === 'chat') {
+        var self = d.from.charAt(0) === state().myColor;
+        addMessage(d.text, self, self ? '\u6211' : '\u5bf9\u65b9');
+        if (self) { if (input.value.trim() === d.text) input.value = ''; hint.textContent = '\u5df2\u9001\u8fbe\u623f\u95f4'; }
+      } else if (d.type === 'chat_error') {
+        hint.textContent = d.error === 'sending messages too quickly' ? '\u53d1\u9001\u592a\u5feb\uff0c5 \u79d2\u5185\u6700\u591a 5 \u6761\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5' : '\u53d1\u9001\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6d88\u606f\u548c\u623f\u95f4\u8fde\u63a5';
+      } else if (d.type === 'social_ready') {
+        peerId = d.peerId; lastPeerId = peerId;
+        var note = pending[peerId];
+        if (note) options.send({ type: 'whisper', targetId: peerId, noteId: note.id, text: note.text });
+      } else if (d.type === 'whisper') {
+        if (d.peerId !== peerId) return;
+        var known = inbox.some(function(n) { return n.id === d.noteId; });
+        if (!known) {
+          var updated = inbox.concat([{ id: d.noteId, text: d.text }]).slice(-100);
+          if (!write('chess_whispers_inbox', updated)) { noteHint.textContent = '\u65e0\u6cd5\u4fdd\u5b58\u6536\u5230\u7684\u7559\u8a00\uff0c\u5df2\u4fdd\u7559\u5728\u5bf9\u65b9\u5f85\u9001\u8fbe\u5217\u8868'; return; }
+          inbox = updated; renderInbox(); addMessage(d.text, false, '\u5bf9\u65b9\u4e0a\u5c40\u7684\u6084\u6084\u8bdd');
+          el('whisperDetails').open = true;
+        }
+        options.send({ type: 'whisper_ack', targetId: peerId, noteId: d.noteId });
+      } else if (d.type === 'whisper_ack') {
+        if (pending[d.peerId] && pending[d.peerId].id === d.noteId) {
+          delete pending[d.peerId]; write('chess_whispers_pending', pending); noteHint.textContent = '\u4e0a\u4e00\u5c40\u7684\u7559\u8a00\u5df2\u9001\u8fbe';
+        }
+      } else if (d.type === 'voice') handleVoice(d);
+      else if (d.type === 'voice_error') endCall('\u5bf9\u65b9\u4e0d\u5728\u7ebf\uff0c\u6682\u65f6\u65e0\u6cd5\u8bed\u97f3', false);
+    }
+  };
+};

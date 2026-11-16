@@ -387,6 +387,7 @@ function clearPlayerDisconnectTimer(player) {
 
 function discardRoom(room) {
   if (!room) return;
+  stopVoice(room, 'room_closed');
   delete rooms[room.id];
   for (var i = 0; i < room.players.length; i++) {
     var player = room.players[i];
@@ -397,8 +398,35 @@ function discardRoom(room) {
   room.players = [];
 }
 
+function stopVoice(room, reason) {
+  if (!room || !room.voiceCall) return;
+  var call = room.voiceCall;
+  clearTimeout(call.timer);
+  room.voiceCall = null;
+  sendRoom(room, { type: 'voice', action: 'hangup', callId: call.id, reason: reason || 'ended' });
+}
+
+function socialReady(room, onlyWs) {
+  for (var i = 0; i < room.players.length; i++) {
+    var me = room.players[i], peer = room.players[1 - i];
+    if (me && peer && me.clientId && peer.clientId && (!onlyWs || onlyWs === me.ws)) {
+      send(me.ws, { type: 'social_ready', peerId: peer.clientId, peerName: peer.name });
+    }
+  }
+}
+
+function clientIdentity(value) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value) ? value : null;
+}
+
+function cleanChat(text, limit) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
 function finishRoom(room, reason, winner) {
   if (!room || room.status === 'finished') return;
+  stopVoice(room, 'game_over');
   room.status = 'finished';
   room.finishedAt = Date.now();
   room.undoRequest = null;
@@ -444,6 +472,7 @@ function restorePlayerConnection(room, roomPlayer, ws, pid) {
   pl.name = roomPlayer.name;
   pl.color = roomPlayer.color;
   pl.token = roomPlayer.token;
+  pl.clientId = roomPlayer.clientId;
 
   var lastMove = room.moves && room.moves.length ? room.moves[room.moves.length - 1] : null;
   send(ws, {
@@ -463,6 +492,7 @@ function restorePlayerConnection(room, roomPlayer, ws, pid) {
       return { name: p.name, color: p.color, disconnected: !!p.disconnected };
     })
   });
+  socialReady(room);
   sendRoom(room, { type: 'opponent_status', status: 'reconnected', color: roomPlayer.color }, ws);
 }
 
@@ -495,7 +525,7 @@ function handleMessage(ws, pid, msg) {
     var token = genToken();
     var room = {
       id: rid,
-      players: [{ pid: pid, ws: ws, name: cleanName(msg.name, 'P1'), color: 'white', token: token, disconnected: false }],
+      players: [{ pid: pid, ws: ws, name: cleanName(msg.name, 'P1'), color: 'white', token: token, clientId: clientIdentity(msg.clientId), disconnected: false }],
       board: null,
       turn: 'white',
       castling: initCastling(),
@@ -512,6 +542,7 @@ function handleMessage(ws, pid, msg) {
     pl.name = room.players[0].name;
     pl.color = 'white';
     pl.token = token;
+    pl.clientId = room.players[0].clientId;
     send(ws, { type: 'room_created', roomId: rid, color: 'white', token: token });
     console.log('Room ' + rid + ' created by ' + room.players[0].name);
     return;
@@ -567,11 +598,12 @@ function handleMessage(ws, pid, msg) {
     if (room2.status !== 'waiting') { roomMessageError(ws, 'game has already started'); return; }
     if (room2.players[0] && room2.players[0].disconnected) { roomMessageError(ws, 'room creator is offline'); return; }
     var joinToken = genToken();
-    var joiningPlayer = { pid: pid, ws: ws, name: cleanName(msg.name, 'P2'), color: 'black', token: joinToken, disconnected: false };
+    var joiningPlayer = { pid: pid, ws: ws, name: cleanName(msg.name, 'P2'), color: 'black', token: joinToken, clientId: clientIdentity(msg.clientId), disconnected: false };
     pl.name = joiningPlayer.name;
     pl.color = 'black';
     pl.roomId = rid2;
     pl.token = joinToken;
+    pl.clientId = joiningPlayer.clientId;
     room2.players.push(joiningPlayer);
     room2.board = initBoard();
     room2.castling = initCastling();
@@ -600,17 +632,69 @@ function handleMessage(ws, pid, msg) {
       enPassant: room2.enPassant,
       players: room2.players.map(function(p) { return { name: p.name, color: p.color }; })
     });
+    socialReady(room2);
     console.log(joiningPlayer.name + ' joined room ' + rid2);
+    return;
+  }
+
+  if (msg.type === 'whisper' || msg.type === 'whisper_ack') {
+    var noteRoom = rooms[pl.roomId];
+    if (!noteRoom || noteRoom.status !== 'playing' || !pl.clientId ||
+        typeof msg.noteId !== 'string' || !/^[a-f0-9]{32}$/.test(msg.noteId)) return;
+    var notePeer = noteRoom.players.filter(function(p) { return p.pid !== pid; })[0];
+    if (!notePeer || !notePeer.ws || !notePeer.clientId || notePeer.clientId !== msg.targetId) return;
+    if (msg.type === 'whisper_ack') {
+      send(notePeer.ws, { type: 'whisper_ack', noteId: msg.noteId, peerId: pl.clientId });
+    } else {
+      var noteText = cleanChat(msg.text, 200);
+      if (!noteText || (pl.lastWhisper && Date.now() - pl.lastWhisper < 1000)) return;
+      pl.lastWhisper = Date.now();
+      send(notePeer.ws, { type: 'whisper', noteId: msg.noteId, peerId: pl.clientId, text: noteText });
+    }
+    return;
+  }
+
+  if (msg.type === 'voice') {
+    var vr = rooms[pl.roomId];
+    if (!vr || vr.status !== 'playing' || typeof msg.callId !== 'string' || !/^[a-f0-9]{32}$/.test(msg.callId)) return;
+    var vp = vr.players.filter(function(p) { return p.pid !== pid; })[0];
+    if (!vp || !vp.ws || vp.disconnected) { send(ws, { type: 'voice_error', error: 'opponent offline' }); return; }
+    var nowVoice = Date.now();
+    if (!pl.voiceWindow || nowVoice - pl.voiceWindow > 10000) { pl.voiceWindow = nowVoice; pl.voiceCount = 0; }
+    if (++pl.voiceCount > 150) return;
+    var vc = vr.voiceCall;
+    if (msg.action === 'request') {
+      if (vc || (pl.voiceRequestedAt && nowVoice - pl.voiceRequestedAt < 3000)) {
+        send(ws, { type: 'voice', action: 'reject', callId: msg.callId, reason: 'busy' }); return;
+      }
+      pl.voiceRequestedAt = nowVoice;
+      vc = vr.voiceCall = { id: msg.callId, caller: pl.color, accepted: false };
+      vc.timer = setTimeout(function() { stopVoice(vr, 'timeout'); }, 45000);
+    } else {
+      if (!vc || vc.id !== msg.callId) return;
+      if (msg.action === 'hangup' || msg.action === 'reject') { stopVoice(vr, msg.action); return; }
+      if (msg.action === 'accept') {
+        if (pl.color === vc.caller || vc.accepted) return;
+        vc.accepted = true;
+      } else if (msg.action === 'offer' || msg.action === 'answer') {
+        if (!vc.accepted || typeof msg.sdp !== 'string' || msg.sdp.length > 12000 ||
+            (msg.action === 'offer') !== (pl.color === vc.caller)) return;
+        if (msg.action === 'answer') clearTimeout(vc.timer);
+      } else if (msg.action === 'ice') {
+        if (!vc.accepted || !msg.candidate || typeof msg.candidate.candidate !== 'string' ||
+            msg.candidate.candidate.length > 2000 || JSON.stringify(msg.candidate).length > 3000) return;
+      } else return;
+    }
+    send(vp.ws, { type: 'voice', action: msg.action, callId: vc.id,
+      sdp: msg.sdp, candidate: msg.candidate });
     return;
   }
 
   if (msg.type === 'chat') {
     var roomChat = rooms[pl.roomId];
     if (!roomChat) { send(ws, { type: 'chat_error', error: 'not in a room' }); return; }
-    if (typeof msg.text !== 'string') return;
-    var text = msg.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
-    if (!text) return;
-    if (text.length > 200) text = text.slice(0, 200);
+    var text = cleanChat(msg.text, 200);
+    if (!text) { send(ws, { type: 'chat_error', error: 'empty message' }); return; }
     var nowChat = Date.now();
     if (!pl.chatTimes) pl.chatTimes = [];
     pl.chatTimes = pl.chatTimes.filter(function(t) { return nowChat - t < 5000; });
@@ -627,7 +711,10 @@ function handleMessage(ws, pid, msg) {
     var room3 = rooms[pl.roomId];
     if (!room3 || room3.status !== 'playing') { roomMessageError(ws, 'game is not active'); return; }
     var res = processMove(room3, msg);
-    if (res.ok) sendRoom(room3, Object.assign({ type: 'move_made' }, res));
+    if (res.ok) {
+      if (res.gameOver) stopVoice(room3, 'game_over');
+      sendRoom(room3, Object.assign({ type: 'move_made' }, res));
+    }
     else roomMessageError(ws, res.err);
     return;
   }
@@ -805,6 +892,7 @@ wss.on('connection', function(ws) {
           roomPlayer.disconnected = true;
           roomPlayer.disconnectedAt = Date.now();
           roomPlayer.ws = null;
+          stopVoice(room, 'disconnected');
           room.undoRequest = null;
           room.drawRequest = null;
           clearPlayerDisconnectTimer(roomPlayer);

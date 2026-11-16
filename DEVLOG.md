@@ -145,3 +145,16 @@ node server.js
 - 服务端 `move_made`、`undo_result`、`reconnected` 增加 `moveCount`；走棋记录增加 `promotion` 字段，供网页棋谱显示升变。
 - 验证：`node --check` 通过；本地服务运行时 `node test.js` 全部通过；Chrome headless 实测 `engine/stockfish.js` + `stockfish.wasm` 在 Worker 中正常返回 `bestmove`；网页端复盘/推演用无头 Chrome 截图检查布局。
 - 说明：实时分析、复盘、推演和音效目前只在网页端实现，小游戏端未同步；推演升变固定为后。
+
+## 聊天与互动完整实现（2026-11-16）
+
+- 将聊天按钮与面板移出棋盘容器，放在棋盘下方正常文档流内；新增手机 viewport，桌面和 390px 手机宽度均无横向溢出。
+- 新增浏览器专用 `js/social.js`，接通房间文字收发、回车发送、快捷话术/表情、未读角标和错误提示；消息使用 textContent/文本节点显示，不能执行 HTML。遵照用户要求不做内容审查；仅保留控制字符清理、200 字长度及每 5 秒 5 条的传输限制。
+- 新增 WebRTC 语音：发起/接听/拒绝、静音/挂断、候选地址缓存、45 秒超时、麦克风权限失败提示；对局结束、断线、离开页面后释放音轨。服务端限定同一棋局内转发，处理同时呼叫冲突及非法信令。
+- 默认 STUN：`stun:stun.l.google.com:19302`；界面提供可选 TURN 地址、用户名和密码，凭据仅在当前页面使用。虚拟麦克风双端已接通，真实不同网络仍依赖 STUN 可达性和必要时的有效 TURN 服务。
+- 每日提醒按设备本地时间保存，网页打开时显示提示并在获得通知权限后尝试系统通知；额外导出含 RRULE:FREQ=DAILY 和 VALARM 的 ICS 日历，让设备日历在网页关闭后负责提醒。手机系统是否显示通知取决于日历导入与权限设置。
+- 赛后悄悄话采用浏览器随机身份与本地发件箱；下一局同一对手匹配后转发，收件端本地保存/去重后确认送达。普通聊天和悄悄话正文均不落服务端磁盘；无需依赖 Render 临时文件系统。换浏览器、清理网站数据或发送方一直不再上线时，待发留言不能送达。
+- 新增 `server/social-test.js`：独立临时端口验证文字不审查、长度/频率上限、房间隔离、语音握手/ICE/结束清理和跨局留言确认。运行：`node server/social-test.js`。
+- 新增 `server/browser-test.js`：通过 Chrome DevTools Protocol 操作两个独立浏览器上下文，验证聊天/未读/快捷回复、安全文字呈现、桌面/手机布局、虚拟麦克风语音接通/静音/挂断、悄悄话跨局送达与刷新恢复、提醒设置和 ICS 生成。
+- 浏览器测试准备：本地棋局服务监听 43879、项目根目录 `python3 -m http.server 8765 --bind 127.0.0.1`、Chrome 以 `--headless=new --remote-debugging-port=9226 --user-data-dir=/tmp/chess-social-test --use-fake-device-for-media-stream --use-fake-ui-for-media-stream` 启动；再运行 `node server/browser-test.js`。截图写入 `/tmp/chess-social-desktop.png` 和 `/tmp/chess-social-mobile.png`。测试在浏览器中将连接替换为本地服务，不访问线上棋局。
+- 验证：原有 `server/test.js`、独立互动协议回归和 Chrome 双端交互测试通过。真实手机麦克风权限、跨网络语音与实际日历导入提醒仍需设备回归。

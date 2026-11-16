@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>国际象棋 联机</title>
 <style>
 body { margin: 0; background: #222; color: #eee; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 12px; box-sizing: border-box; min-height: 100vh; }
@@ -46,11 +47,11 @@ input { padding: 8px 12px; font-size: 18px; width: 150px; text-transform: upperc
 #simHint { font-size: 12px; color: #888; }
 #boardWrap { position: relative; width: 560px; max-width: 100%; }
 #boardWrap > canvas { display: block; }
-#chatWidget { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; flex-direction: column; align-items: flex-end; }
-#btnChatToggle { background: #e94560; color: #fff; border: none; border-radius: 16px; padding: 7px 13px; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.45); }
+#chatWidget { width: 560px; max-width: 100%; margin-top: 10px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+#btnChatToggle { align-self: flex-end; background: #e94560; color: #fff; border: none; border-radius: 16px; padding: 7px 13px; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.45); }
 #chatBadge { display: none; margin-left: 5px; background: #fff; color: #e94560; border-radius: 9px; padding: 0 5px; font-size: 11px; font-weight: bold; }
 #chatBadge.show { display: inline-block; }
-#chatPanel { display: none; width: 286px; max-width: calc(100vw - 40px); margin-bottom: 8px; background: rgba(25,25,25,0.97); border: 1px solid #555; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); overflow: hidden; }
+#chatPanel { display: none; width: 100%; box-sizing: border-box; margin-bottom: 8px; background: rgba(25,25,25,0.97); border: 1px solid #555; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); overflow: hidden; }
 #chatPanel.show { display: block; }
 .chat-head { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; background: #2b2b2b; font-size: 13px; color: #ddd; }
 .chat-head button { background: none; border: none; color: #aaa; font-size: 20px; line-height: 1; padding: 0 2px; }
@@ -66,6 +67,16 @@ input { padding: 8px 12px; font-size: 18px; width: 150px; text-transform: upperc
 #chatInput { flex: 1; width: auto; min-width: 0; padding: 6px 8px; font-size: 13px; text-transform: none; letter-spacing: 0; text-align: left; }
 #btnChatSend { padding: 6px 10px; }
 #chatHint { min-height: 15px; padding: 0 10px 7px; font-size: 11px; color: #888; }
+#socialTools { width: 560px; max-width: 100%; margin-top: 8px; font-size: 13px; box-sizing: border-box; }
+#socialTools details { margin: 8px 0; border: 1px solid #555; border-radius: 8px; padding: 10px; }
+#socialTools summary { cursor: pointer; }
+#socialTools .row { justify-content: flex-start; margin-top: 10px; }
+#socialTools input { width: 140px; max-width: 100%; box-sizing: border-box; font-size: 14px; text-transform: none; letter-spacing: normal; text-align: left; }
+#socialTools textarea { width: 100%; box-sizing: border-box; min-height: 70px; margin-top: 8px; }
+#socialTools p { line-height: 1.5; overflow-wrap: anywhere; }
+.social-hint { color: #aaa; font-size: 12px; margin: 6px 0; }
+#whisperInbox p { white-space: pre-wrap; border-left: 2px solid #e94560; padding-left: 8px; }
+button:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -114,24 +125,60 @@ input { padding: 8px 12px; font-size: 18px; width: 150px; text-transform: upperc
 </div>
 <div id="boardWrap">
   <canvas id="c"></canvas>
+</div>
   <div id="chatWidget">
     <div id="chatPanel">
       <div class="chat-head"><span>对局聊天</span><button id="btnChatClose" title="关闭">&times;</button></div>
-      <div id="chatMessages"></div>
+      <div id="chatMessages" role="log" aria-live="polite"></div>
       <div id="chatQuick">
         <button data-phrase="等你">等你</button>
         <button data-phrase="好棋">好棋</button>
         <button data-phrase="手下留情">手下留情</button>
         <button data-phrase="再来一局">再来一局</button>
+        <button data-phrase="👍" aria-label="点赞">👍</button>
+        <button data-phrase="👏" aria-label="鼓掌">👏</button>
+        <button data-phrase="🤝" aria-label="握手">🤝</button>
       </div>
       <div class="chat-input-row">
-        <input id="chatInput" maxlength="100" placeholder="输入消息">
+        <input id="chatInput" maxlength="200" placeholder="输入消息，最多 200 字" aria-label="聊天消息">
         <button id="btnChatSend">发送</button>
       </div>
       <div id="chatHint"></div>
     </div>
-    <button id="btnChatToggle">聊天<span id="chatBadge">0</span></button>
+    <button id="btnChatToggle" aria-expanded="false" aria-controls="chatPanel">聊天<span id="chatBadge">0</span></button>
   </div>
+<div id="socialTools">
+  <details id="voiceDetails">
+    <summary>语音聊天</summary>
+    <div class="row">
+      <button id="btnVoice">发起语音</button>
+      <button id="btnVoiceAccept" hidden>接听</button>
+      <button id="btnVoiceReject" hidden>拒绝</button>
+      <button id="btnVoiceMute" disabled>静音</button>
+      <button id="btnVoiceHangup" hidden>挂断</button>
+      <button id="btnVoicePlay" hidden>播放对方声音</button>
+    </div>
+    <p id="voiceHint" class="social-hint" role="status">对局中可发起语音，接听后使用麦克风</p>
+    <audio id="remoteAudio" autoplay playsinline></audio>
+    <details><summary>跨网络连接设置（可选）</summary>
+      <p class="social-hint">默认尝试点对点连接。无法接通时，双方可填写可用的 TURN 中继；凭据仅在当前页面使用。</p>
+      <div class="row"><label>中继地址 <input id="turnUrl" placeholder="turn:服务器:3478"></label></div>
+      <div class="row"><label>用户名 <input id="turnUser" autocomplete="off"></label><label>密码 <input id="turnPassword" type="password" autocomplete="off"></label></div>
+    </details>
+  </details>
+  <details><summary>今日一局 · 每日提醒</summary>
+    <div class="row"><label>每天 <input id="reminderTime" type="time" value="20:00"></label><button id="btnReminder">开启每日提醒</button><button id="btnCalendar">添加到手机 / 电脑日历</button></div>
+    <p id="reminderHint" class="social-hint" role="status">网页打开时可提醒；希望关闭网页后也收到提醒，请下载并导入日历。</p>
+  </details>
+  <details id="whisperDetails"><summary>赛后悄悄话</summary>
+    <div id="noteComposer" hidden>
+      <label for="noteInput">给刚才的对手留一句话，下次彼此开局时再看到</label>
+      <textarea id="noteInput" maxlength="200" placeholder="最多 200 字"></textarea>
+      <div class="row"><button id="btnSaveNote">保存到下一局</button><button id="btnDeleteNote">取消待送达留言</button></div>
+    </div>
+    <p id="noteHint" class="social-hint" role="status">结束一局后可以留言。留言保存在本浏览器，下次双方使用原浏览器开局时送达；清除网站数据或换设备后无法恢复。</p>
+    <div id="whisperInbox" aria-live="polite"></div>
+  </details>
 </div>
 <div id="evalWrap">
   <div id="evalBar"><div id="evalFill"></div><div id="evalCenter"></div></div>
@@ -171,6 +218,7 @@ input { padding: 8px 12px; font-size: 18px; width: 150px; text-transform: upperc
     </div>
   </div>
 </div>
+<script src="js/social.js"></script>
 <script>
 // Render 部署的国际象棋 WebSocket 服务
 var SERVER = 'wss://chess-online-server-popz.onrender.com';
@@ -1284,6 +1332,7 @@ function connect(onOk) {
   ws.onclose = function() {
     clearWakeTimer();
     connected = false;
+    social.disconnect();
     if (!over && roomId && reconnectToken) {
       status('网络断开，正在尝试重连...');
       retryBtn.style.display = 'inline-block';
@@ -1324,7 +1373,9 @@ function attemptReconnect() {
 }
 
 function handle(d) {
+  social.message(d);
   if (d.type === 'room_created') {
+    social.room(d.roomId);
     saveSession(d.roomId, d.token);
     myColor = 'w';
     castling = { wK: true, wQ: true, bK: true, bQ: true };
@@ -1334,6 +1385,7 @@ function handle(d) {
     showRoomModal();
     status('等待对手加入...');
   } else if (d.type === 'room_joined') {
+    social.room(d.roomId);
     myColor = 'b';
     saveSession(d.roomId, d.token);
     updateRoomButton();
@@ -1369,6 +1421,7 @@ function handle(d) {
     draw();
     requestLiveAnalysis();
   } else if (d.type === 'reconnected') {
+    social.room(d.roomId);
     saveSession(d.roomId, d.token || reconnectToken);
     undoPending = false;
     hideUndoModal();
@@ -1405,6 +1458,7 @@ function handle(d) {
     status('对局已结束或房间已失效，请重新创建或加入房间');
   } else if (d.type === 'opponent_status') {
     if (d.status === 'disconnected') {
+      social.disconnect();
       undoPending = false;
       hideUndoModal();
       drawPending = false;
@@ -1502,7 +1556,7 @@ function handle(d) {
 document.getElementById('btnCreate').onclick = function() {
   if (myColor) return;
   lastAction = function() {
-    connect(function() { send({ type: 'create_room', name: '玩家' }); });
+    connect(function() { send({ type: 'create_room', name: '玩家', clientId: social.identity }); });
   };
   lastAction();
 };
@@ -1691,6 +1745,7 @@ function showPromotion(color) {
 }
 
 function resetSession() {
+  social.end();
   stopAnimation();
   clearStoredSession();
   send({ type: 'leave_room' });
@@ -1718,10 +1773,15 @@ function joinRoom(id) {
   var stored = loadStoredSession();
   var token = stored.roomId === id ? stored.token : '';
   lastAction = function() {
-    connect(function() { send({ type: 'join_room', roomId: id, name: '玩家', token: token }); });
+    connect(function() { send({ type: 'join_room', roomId: id, name: '玩家', clientId: social.identity, token: token }); });
   };
   lastAction();
 }
+
+var social = ChessSocial({
+  send: send,
+  state: function() { return { connected: connected, roomId: roomId, myColor: myColor, playing: playing && !over }; }
+});
 
 // 通过链接 ?room=XXXX 自动加入或恢复上一局会话
 (function() {

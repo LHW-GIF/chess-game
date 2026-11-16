@@ -36,5 +36,6 @@ WeChat mini-game (微信小游戏) online chess, with a separate browser-based o
 
 - `js/` — mini-game client (only `main.js`, `board.js`, `renderer.js`, `socket.js` are live code).
 - `server/` — Node backend + `test.js`; only dependency is `ws`.
-- `index.html` — browser multiplayer client, separate from the mini-game client.
+- `index.html` — browser multiplayer client, separate from the mini-game client; `js/social.js` is browser-only chat, WebRTC audio, reminders, and local next-game notes.
+- Social tests: `node server/social-test.js` uses an isolated ephemeral server; `node server/browser-test.js` needs local server/static hosting and headless Chrome (see DEVLOG).
 - No CI, no git hooks, no workspace/monorepo tooling.
