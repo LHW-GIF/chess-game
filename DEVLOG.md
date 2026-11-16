@@ -158,3 +158,10 @@ node server.js
 - 新增 `server/browser-test.js`：通过 Chrome DevTools Protocol 操作两个独立浏览器上下文，验证聊天/未读/快捷回复、安全文字呈现、桌面/手机布局、虚拟麦克风语音接通/静音/挂断、悄悄话跨局送达与刷新恢复、提醒设置和 ICS 生成。
 - 浏览器测试准备：本地棋局服务监听 43879、项目根目录 `python3 -m http.server 8765 --bind 127.0.0.1`、Chrome 以 `--headless=new --remote-debugging-port=9226 --user-data-dir=/tmp/chess-social-test --use-fake-device-for-media-stream --use-fake-ui-for-media-stream` 启动；再运行 `node server/browser-test.js`。截图写入 `/tmp/chess-social-desktop.png` 和 `/tmp/chess-social-mobile.png`。测试在浏览器中将连接替换为本地服务，不访问线上棋局。
 - 验证：原有 `server/test.js`、独立互动协议回归和 Chrome 双端交互测试通过。真实手机麦克风权限、跨网络语音与实际日历导入提醒仍需设备回归。
+
+## 连接重试竞态修复（2026-11-16）
+
+- 用户反馈 Firefox 可访问网页、Render 健康检查也正常，但棋局提示无法连接；本机 HTTPS 健康检查和直接 WebSocket 握手均成功，尚需用户控制台错误确认 Firefox 失败原因。
+- 检查发现重试会保留旧 Socket 回调，延迟的 open/close/error/message 可能覆盖新连接状态；现在替换 Socket 前解除旧事件，并用实例身份检查过滤已排队事件。旧连接的重连定时器也不能替换较新的连接。
+- 连接复用和发送同时检查 WebSocket.OPEN，避免 connected 标记滞后时复用已关闭连接或向未打开的连接发送。
+- 新增 `node server/connection-test.js`，覆盖旧事件延迟触发、关闭 Socket 复用/发送及旧定时器场景；测试通过。此修复消除真实存在的重试问题，不代表已确认 Firefox 网络失败的全部原因。

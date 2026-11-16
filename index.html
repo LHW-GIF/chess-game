@@ -1303,10 +1303,13 @@ function clearWakeTimer() {
 }
 
 function connect(onOk) {
-  if (connected && ws) { onOk(); return; }
-  if (ws) {
-    try { ws.close(); } catch (e) {}
-    ws = null;
+  if (connected && ws && ws.readyState === WebSocket.OPEN) { onOk(); return; }
+  var previous = ws;
+  ws = null;
+  connected = false;
+  if (previous) {
+    previous.onopen = previous.onclose = previous.onerror = previous.onmessage = null;
+    try { previous.close(); } catch (e) {}
   }
   retryBtn.style.display = 'none';
   status('连接服务器...');
@@ -1317,19 +1320,22 @@ function connect(onOk) {
       retryBtn.style.display = 'inline-block';
     }
   }, 3000);
-  try { ws = new WebSocket(SERVER); } catch (err) {
+  var socket;
+  try { socket = new WebSocket(SERVER); ws = socket; } catch (err) {
     clearWakeTimer();
     retryBtn.style.display = 'inline-block';
     status('连接失败，请点击"重试连接"');
     return;
   }
-  ws.onopen = function() {
+  socket.onopen = function() {
+    if (ws !== socket) return;
     clearWakeTimer();
     retryBtn.style.display = 'none';
     connected = true;
     onOk();
   };
-  ws.onclose = function() {
+  socket.onclose = function() {
+    if (ws !== socket) return;
     clearWakeTimer();
     connected = false;
     social.disconnect();
@@ -1338,7 +1344,7 @@ function connect(onOk) {
       retryBtn.style.display = 'inline-block';
       lastAction = function() { attemptReconnect(); };
       setTimeout(function() {
-        if (!connected && roomId && reconnectToken) attemptReconnect();
+        if (ws === socket && !connected && roomId && reconnectToken) attemptReconnect();
       }, 1000);
     } else if (!over && myColor) {
       over = true;
@@ -1348,12 +1354,14 @@ function connect(onOk) {
       retryBtn.style.display = 'inline-block';
     }
   };
-  ws.onerror = function() {
+  socket.onerror = function() {
+    if (ws !== socket) return;
     clearWakeTimer();
     retryBtn.style.display = 'inline-block';
     status('无法连接服务器（可能正在唤醒，请点击"重试连接"）');
   };
-  ws.onmessage = function(ev) {
+  socket.onmessage = function(ev) {
+    if (ws !== socket) return;
     var d;
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     handle(d);
@@ -1361,7 +1369,7 @@ function connect(onOk) {
 }
 
 function send(msg) {
-  if (ws && connected) ws.send(JSON.stringify(msg));
+  if (ws && connected && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
 function attemptReconnect() {
