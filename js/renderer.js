@@ -89,7 +89,7 @@ Renderer.prototype.drawPiece = function(r, c, piece) {
   var x = this.ox + c * this.cell + this.cell / 2;
   var y = this.oy + this.dr(r) * this.cell + this.cell / 2;
   var isWhite = piece.color === 'white';
-  var sym = SYMBOLS.black[piece.type];
+  var sym = (isWhite && piece.type === 'pawn') ? SYMBOLS.white[piece.type] : SYMBOLS.black[piece.type];
   ctx.save();
   ctx.font = (this.cell * 0.7) + 'px serif';
   ctx.textAlign = 'center';

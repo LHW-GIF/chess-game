@@ -588,26 +588,43 @@ function cloneEP(ep) { return ep ? { r: ep.r, c: ep.c } : null; }
 
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
-function paintPiece(c, p, x, y, size, alpha) {
+var pieceCache = {};
+function pieceImage(p, size) {
+  var key = p[1] + p[0] + '|' + size;
+  if (pieceCache[key]) return pieceCache[key];
+  var dim = Math.ceil(size * 1.8) + 8;
+  var cv = document.createElement('canvas');
+  cv.width = dim; cv.height = dim;
+  var c = cv.getContext('2d');
   var isWhite = p[1] === 'w';
-  var sym = S_b[p[0]];
-  c.save();
-  c.globalAlpha = alpha == null ? 1 : alpha;
+  var sym = (isWhite && p[0] === 'P') ? S_w[p[0]] : S_b[p[0]];
   c.font = size + 'px serif';
   c.textAlign = 'center';
   c.textBaseline = 'middle';
+  var mid = dim / 2;
   if (isWhite) {
     c.lineJoin = 'round';
     c.lineWidth = Math.max(2, size * 0.09);
     c.strokeStyle = '#1f1f1f';
-    c.strokeText(sym, x, y);
+    c.strokeText(sym, mid, mid);
     c.fillStyle = '#fff';
   } else {
     c.fillStyle = '#000';
-    c.fillText(sym, x + 1, y + 1);
+    c.fillText(sym, mid + 1, mid + 1);
     c.fillStyle = '#333';
   }
-  c.fillText(sym, x, y);
+  c.fillText(sym, mid, mid);
+  pieceCache[key] = { canvas: cv, dim: dim };
+  return pieceCache[key];
+}
+
+function paintPiece(c, p, x, y, size, alpha) {
+  var base = Math.max(1, Math.round(size));
+  var img = pieceImage(p, base);
+  var d = img.dim * (size / base);
+  c.save();
+  c.globalAlpha = alpha == null ? 1 : alpha;
+  c.drawImage(img.canvas, x - d / 2, y - d / 2, d, d);
   c.restore();
 }
 
@@ -878,7 +895,7 @@ function recordMove(move, prevBoard, prevTurn, prevCastling, prevEP) {
   if (follow) reviewIndex = gameHistory.length - 1;
   buildMoveList();
   if (panelMode === 'review') renderReview();
-  requestLiveAnalysis();
+  setTimeout(requestLiveAnalysis, 320);
 }
 
 function truncateGameHistory(moveCount) {
