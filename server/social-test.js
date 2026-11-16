@@ -8,8 +8,9 @@ function client(url) {
     var ws = new WebSocket(url), queue = [], waiters = [];
     sockets.push(ws);
     ws.on('error', reject);
+    ws.received = [];
     ws.on('message', function(raw) {
-      var msg = JSON.parse(raw);
+      var msg = JSON.parse(raw); ws.received.push(msg);
       var index = waiters.findIndex(function(w) { return w.type === msg.type && (!w.action || w.action === msg.action); });
       if (index < 0) queue.push(msg);
       else { var w = waiters.splice(index, 1)[0]; clearTimeout(w.timer); w.resolve(msg); }
@@ -80,7 +81,30 @@ async function run() {
   assert.strictEqual(delivered.text, 'a note for our next game');
   b.msg({ type: 'whisper_ack', targetId: aid, noteId: note });
   assert.strictEqual((await a.next('whisper_ack')).noteId, note);
-  console.log('Social protocol passed: uncensored text, length/rate limits, room isolation, voice handshake/ICE/cleanup, next-game notes and acknowledgements');
+  var relayId = 'f'.repeat(32), audio = Buffer.alloc(2048).toString('base64');
+  b.msg({ type: 'voice', action: 'request', callId: relayId, mode: 'relay' });
+  assert.strictEqual((await a.next('voice', 'request')).mode, 'relay');
+  a.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  outsider.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  await new Promise(function(resolve) { setTimeout(resolve, 30); });
+  assert.strictEqual(b.received.filter(function(m) { return m.type === 'voice_audio'; }).length, 0, 'no audio before consent');
+  a.msg({ type: 'voice', action: 'accept', callId: relayId });
+  await a.next('voice', 'relay'); await b.next('voice', 'relay');
+  a.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  assert.strictEqual((await b.next('voice_audio')).audio, audio);
+  b.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  assert.strictEqual((await a.next('voice_audio')).audio, audio);
+  var count = b.received.filter(function(m) { return m.type === 'voice_audio'; }).length;
+  outsider.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  a.msg({ type: 'voice_audio', callId: relayId, audio: 'invalid' });
+  await new Promise(function(resolve) { setTimeout(resolve, 30); });
+  assert.strictEqual(b.received.filter(function(m) { return m.type === 'voice_audio'; }).length, count, 'reject outsiders and invalid frames');
+  a.msg({ type: 'voice', action: 'hangup', callId: relayId });
+  await a.next('voice', 'hangup'); await b.next('voice', 'hangup');
+  a.msg({ type: 'voice_audio', callId: relayId, audio: audio });
+  await new Promise(function(resolve) { setTimeout(resolve, 30); });
+  assert.strictEqual(b.received.filter(function(m) { return m.type === 'voice_audio'; }).length, count, 'no audio after hangup');
+  console.log('Social protocol passed: uncensored text, length/rate limits, room isolation, voice handshake/ICE/cleanup, consent-gated bidirectional relay audio/validation, next-game notes and acknowledgements');
 }
 var timeout = setTimeout(function() { console.error('Social test timed out'); process.exit(1); }, 15000);
 run().then(function() { finish(0); }, function(err) { console.error(err); finish(1); });

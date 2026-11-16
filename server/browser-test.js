@@ -22,13 +22,19 @@ async function until(session, expression, timeout = 12000) {
   }
   throw new Error('UI wait timeout: ' + expression);
 }
-async function page(width) {
+async function click(session, id) {
+  const rect = await evaluate(session, `(function(){var e=document.getElementById(${JSON.stringify(id)});e.scrollIntoView({block:'center'});var r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  await command('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, session);
+  await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 }, session);
+}
+async function page(width, unsupportedWechat) {
   const context = await command('Target.createBrowserContext');
   contexts.push(context.browserContextId);
   const target = await command('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
   const { sessionId } = await command('Target.attachToTarget', { targetId: target.targetId, flatten: true });
   sessions.push(sessionId);
   await command('Page.enable', {}, sessionId);
+  if (unsupportedWechat) await command('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(navigator,'mediaDevices',{value:undefined});Object.defineProperty(navigator,'userAgent',{value:'MicroMessenger test browser'});" }, sessionId);
   await command('Page.addScriptToEvaluateOnNewDocument', { source: `(function() {
     var Native = window.WebSocket;
     window.WebSocket = function(url, protocols) {
@@ -60,25 +66,40 @@ async function run() {
   await evaluate(b, `joinRoom(${JSON.stringify(room)})`);
   await until(a, 'playing'); await until(b, 'playing');
   await evaluate(a, `document.getElementById('chatInput').value='<b>love</b> fuck';document.getElementById('btnChatSend').click()`);
-  await until(b, "document.getElementById('chatMessages').textContent.indexOf('<b>love</b> fuck')>=0");
-  assert.strictEqual(await evaluate(b, "document.querySelector('#chatMessages b') === null"), true);
-  assert.strictEqual(await evaluate(b, "document.getElementById('chatBadge').textContent"), '1');
-  await evaluate(b, "document.getElementById('btnChatToggle').click(); document.querySelector('[data-phrase=\"好棋\"]').click()");
-  await until(a, "document.getElementById('chatMessages').textContent.indexOf('好棋')>=0");
-  assert.strictEqual(await evaluate(b, "document.getElementById('chatBadge').className"), '');
+  await until(b, "document.getElementById('opponentBubbles').textContent.indexOf('<b>love</b> fuck')>=0");
+  assert.strictEqual(await evaluate(b, "document.querySelector('#opponentBubbles b') === null"), true);
+  assert.strictEqual(await evaluate(b, "document.querySelector('#opponentBubbles .speech-bubble') !== null"), true);
+  await evaluate(b, "document.querySelector('[data-phrase=\"好棋\"]').click()");
+  await until(a, "document.getElementById('opponentBubbles').textContent.indexOf('好棋')>=0");
   for (const p of [a,b]) {
     assert.strictEqual(await evaluate(p, "document.getElementById('chatWidget').getBoundingClientRect().top >= document.getElementById('c').getBoundingClientRect().bottom"), true);
     assert.strictEqual(await evaluate(p, 'document.documentElement.scrollWidth <= innerWidth'), true);
   }
-  await evaluate(a, "document.getElementById('voiceDetails').open=true; document.getElementById('btnVoice').click()");
+  for (const p of [a,b]) {
+    await evaluate(p, `window.voiceContexts=[];window.voiceStreams=[];
+      (function(){var Native=window.AudioContext;window.AudioContext=function(){var ctx=new Native();voiceContexts.push(ctx);return ctx};window.AudioContext.prototype=Native.prototype;
+      var gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=function(c){return gum(c).then(function(s){voiceStreams.push(s);return s})};})();`);
+  }
+  await evaluate(a, "document.getElementById('voiceDetails').open=true");
+  await click(a, 'btnVoice');
   await until(b, "!document.getElementById('btnVoiceAccept').hidden");
-  await evaluate(b, "document.getElementById('btnVoiceAccept').click()");
-  await until(a, "document.getElementById('voiceHint').textContent === '语音已接通'", 25000);
-  await until(b, "document.getElementById('voiceHint').textContent === '语音已接通'", 25000);
+  await click(b, 'btnVoiceAccept');
+  await until(a, "document.getElementById('voiceHint').textContent.indexOf('语音已接通') === 0", 25000);
+  await until(b, "document.getElementById('voiceHint').textContent.indexOf('语音已接通') === 0", 25000);
+  for (const p of [a,b]) {
+    await until(p, "Number(document.getElementById('voiceIO').getAttribute('data-sent-frames')) > 5 && Number(document.getElementById('voiceIO').getAttribute('data-received-frames')) > 5");
+    await until(p, "Number(document.getElementById('voiceIO').getAttribute('data-input-peak')) > .01 && Number(document.getElementById('voiceIO').getAttribute('data-output-peak')) > .01", 20000);
+    assert.strictEqual(await evaluate(p, "Number(document.getElementById('voiceIO').getAttribute('data-played-frames')) > 0"), true);
+  }
+  await evaluate(b, "voiceContexts[0].suspend()");
+  await until(b, "document.getElementById('speakerStatus').textContent.indexOf('暂停') >= 0");
+  await click(b, 'btnVoicePlay');
+  await until(b, "voiceContexts[0].state === 'running'");
   await evaluate(a, "document.getElementById('btnVoiceMute').click()");
   assert.strictEqual(await evaluate(a, "document.getElementById('btnVoiceMute').textContent"), '取消静音');
   await evaluate(a, "document.getElementById('btnVoiceHangup').click()");
   await until(b, "document.getElementById('btnVoiceHangup').hidden");
+  for (const p of [a,b]) assert.strictEqual(await evaluate(p, "voiceStreams[0].getAudioTracks()[0].readyState"), 'ended');
   await evaluate(a, "document.getElementById('btnResign').click()");
   await until(a, "!document.getElementById('noteComposer').hidden");
   await evaluate(a, "document.getElementById('noteInput').value='next game secret';document.getElementById('btnSaveNote').click()");
@@ -92,12 +113,22 @@ async function run() {
   await command('Page.reload', {}, b);
   await until(b, "typeof social !== 'undefined' && document.getElementById('whisperInbox').textContent.indexOf('next game secret')>=0");
   await until(b, "playing");
+  await evaluate(a, "document.getElementById('chatInput').value='这步下得真好，继续陪你下一局。';document.getElementById('btnChatSend').click()");
+  await until(b, "document.getElementById('opponentBubbles').textContent.indexOf('继续陪你')>=0");
+  await evaluate(b, "document.querySelector('[data-phrase=\"好棋\"]').click()");
+  await until(a, "document.getElementById('opponentBubbles').textContent.indexOf('好棋')>=0");
+  for (const p of [a,b]) {
+    assert.strictEqual(await evaluate(p, "document.getElementById('opponentBubbles').getBoundingClientRect().bottom <= document.getElementById('c').getBoundingClientRect().top"), true);
+    assert.strictEqual(await evaluate(p, "parseFloat(getComputedStyle(document.querySelector('.speech-bubble')).fontSize) >= 18"), true);
+  }
   const capture = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, a);
   fs.writeFileSync('/tmp/chess-social-desktop.png', Buffer.from(capture.data,'base64'));
   const mobile = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }, b);
   fs.writeFileSync('/tmp/chess-social-mobile.png', Buffer.from(mobile.data,'base64'));
+  const c = await page(390, true);
+  assert.strictEqual(await evaluate(c, "document.getElementById('voiceCompatibility').textContent.indexOf('当前微信浏览器不支持') >= 0"), true);
   for (const context of contexts) await command('Target.disposeBrowserContext', { browserContextId: context });
-  console.log('Browser UI passed: desktop/mobile layout below board, safe uncensored chat, unread badge/quick replies, WebRTC connected/mute/hangup, next-game notes/persistence/ack');
+  console.log('Browser UI passed: desktop/mobile layout below board, safe uncensored chat, automatic large player bubbles/quick replies, bidirectional nonzero relay audio/playback/resume/mute/hangup, next-game notes/persistence/ack, unsupported WeChat detection without breaking chess');
 }
 run().then(() => { browser.close(); process.exit(0); }).catch(err => { console.error(err); if (browser) browser.close(); process.exit(1); });
 setTimeout(() => {console.error('Browser test timed out');process.exit(1)},90000);

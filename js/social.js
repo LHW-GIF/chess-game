@@ -16,28 +16,28 @@ window.ChessSocial = function(options) {
   }
   var identity = read('chess_social_identity', '');
   if (!/^[a-f0-9]{32}$/.test(identity)) { identity = randomId(); write('chess_social_identity', identity); }
-  var panel = el('chatPanel'), messages = el('chatMessages'), input = el('chatInput');
-  var hint = el('chatHint'), badge = el('chatBadge'), unread = 0, opened = false;
+  var input = el('chatInput'), hint = el('chatHint');
+  var bubbleTimers = { self: null, other: null };
   var peerId = '', lastPeerId = '', room = '', ended = false;
   var pending = read('chess_whispers_pending', {}), inbox = read('chess_whispers_inbox', []);
   var noteHint = el('noteHint');
   function state() { return options.state(); }
   function canChat() { return state().connected && !!state().roomId; }
-  function addMessage(text, self, who) {
-    var row = document.createElement('div');
-    row.className = 'chat-msg ' + (self ? 'self' : 'other');
-    var name = document.createElement('span');
-    name.className = 'who'; name.textContent = who;
-    row.appendChild(name); row.appendChild(document.createTextNode(text));
-    messages.appendChild(row);
-    while (messages.children.length > 150) messages.removeChild(messages.firstChild);
-    if (!self && !opened) { unread++; badge.textContent = unread > 99 ? '99+' : unread; badge.className = 'show'; }
-    if (opened) messages.scrollTop = messages.scrollHeight;
+  function clearBubbles() {
+    clearTimeout(bubbleTimers.self); clearTimeout(bubbleTimers.other);
+    el('selfBubbles').textContent = ''; el('opponentBubbles').textContent = '';
   }
-  function toggle(value) {
-    opened = value; panel.className = value ? 'show' : '';
-    el('btnChatToggle').setAttribute('aria-expanded', String(value));
-    if (value) { unread = 0; badge.className = ''; messages.scrollTop = messages.scrollHeight; }
+  function addMessage(text, self, who) {
+    var side = self ? 'self' : 'other';
+    var lane = el(self ? 'selfBubbles' : 'opponentBubbles');
+    var bubble = document.createElement('div');
+    bubble.className = 'speech-bubble'; bubble.textContent = text;
+    bubble.setAttribute('aria-label', who + ': ' + text);
+    lane.textContent = ''; lane.appendChild(bubble);
+    clearTimeout(bubbleTimers[side]);
+    bubbleTimers[side] = setTimeout(function() {
+      if (bubble.parentNode === lane) lane.removeChild(bubble);
+    }, Math.max(12000, Math.min(30000, text.length * 150)));
   }
   function sendChat(text) {
     if (!canChat()) { hint.textContent = '\u8bf7\u5148\u521b\u5efa\u6216\u52a0\u5165\u623f\u95f4\uff0c\u8fde\u63a5\u6062\u590d\u540e\u518d\u53d1\u9001'; return; }
@@ -47,8 +47,6 @@ window.ChessSocial = function(options) {
     options.send({ type: 'chat', text: text });
     hint.textContent = '\u5df2\u53d1\u9001\uff0c\u7b49\u5f85\u670d\u52a1\u5668\u786e\u8ba4';
   }
-  el('btnChatToggle').onclick = function() { toggle(!opened); };
-  el('btnChatClose').onclick = function() { toggle(false); };
   el('btnChatSend').onclick = function() { sendChat(input.value); };
   input.onkeydown = function(e) {
     if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(input.value); }
@@ -84,167 +82,32 @@ window.ChessSocial = function(options) {
     noteHint.textContent = '\u5df2\u53d6\u6d88\u5f85\u9001\u8fbe\u7559\u8a00';
   };
 
-  // A request/accept handshake prevents simultaneous offers and unsolicited microphone capture.
-  var callId = '', pc = null, stream = null, incoming = false, candidates = [], epoch = 0, callTimer = null;
-  var voiceHint = el('voiceHint'), remote = el('remoteAudio');
-  function signal(action, extra) {
-    var data = { type: 'voice', action: action, callId: callId };
-    if (extra) for (var key in extra) if (Object.prototype.hasOwnProperty.call(extra, key)) data[key] = extra[key];
-    options.send(data);
-  }
-  function voiceButtons() {
-    el('btnVoice').disabled = !!callId;
-    el('btnVoiceAccept').hidden = !incoming;
-    el('btnVoiceReject').hidden = !incoming;
-    el('btnVoiceHangup').hidden = !callId;
-    el('btnVoiceMute').disabled = !stream;
-  }
-  function endCall(text, notify) {
-    if (notify && callId) signal('hangup');
-    epoch++; clearTimeout(callTimer); callId = ''; incoming = false; candidates = [];
-    if (pc) { pc.onconnectionstatechange = null; pc.onicecandidate = null; pc.close(); pc = null; }
-    if (stream) { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
-    remote.srcObject = null; el('btnVoicePlay').hidden = true;
-    el('btnVoiceMute').textContent = '\u9759\u97f3';
-    voiceHint.textContent = text || '\u8bed\u97f3\u5df2\u7ed3\u675f'; voiceButtons();
-  }
-  function voiceError(err) {
-    var text = err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') ?
-      '\u9ea6\u514b\u98ce\u672a\u83b7\u6388\u6743\uff0c\u8bf7\u5728\u6d4f\u89c8\u5668\u6743\u9650\u4e2d\u5141\u8bb8\u540e\u91cd\u8bd5' : '\u8bed\u97f3\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\uff1b\u8de8\u7f51\u7edc\u65e0\u6cd5\u8fde\u63a5\u65f6\u53ef\u914d\u7f6e TURN';
-    endCall(text, true);
-  }
-  function iceConfig() {
-    var servers = [{ urls: 'stun:stun.l.google.com:19302' }];
-    var url = el('turnUrl').value.trim();
-    if (url) {
-      if (!/^turns?:[^\s]+$/i.test(url)) throw new Error('invalid TURN URL');
-      servers.push({ urls: url, username: el('turnUser').value, credential: el('turnPassword').value });
-    }
-    return { iceServers: servers };
-  }
-  function prepare() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.RTCPeerConnection) {
-      return Promise.reject(new Error('unsupported'));
-    }
-    var stamp = epoch;
-    voiceHint.textContent = '\u6b63\u5728\u8bf7\u6c42\u9ea6\u514b\u98ce\u6743\u9650...';
-    return navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(function(media) {
-      if (stamp !== epoch || !callId) { media.getTracks().forEach(function(t) { t.stop(); }); return false; }
-      stream = media;
-      pc = new RTCPeerConnection(iceConfig());
-      stream.getTracks().forEach(function(t) { pc.addTrack(t, stream); });
-      pc.onicecandidate = function(e) {
-        if (stamp === epoch && e.candidate) signal('ice', { candidate: e.candidate.toJSON() });
-      };
-      pc.ontrack = function(e) {
-        remote.srcObject = e.streams[0];
-        var play = remote.play();
-        if (play && play.catch) play.catch(function() { el('btnVoicePlay').hidden = false; });
-      };
-      pc.onconnectionstatechange = function() {
-        if (!pc || stamp !== epoch) return;
-        if (pc.connectionState === 'connected') {
-          clearTimeout(callTimer); voiceHint.textContent = '\u8bed\u97f3\u5df2\u63a5\u901a';
-        } else if (pc.connectionState === 'failed') voiceError();
-        else if (pc.connectionState === 'disconnected') voiceHint.textContent = '\u8bed\u97f3\u7f51\u7edc\u6682\u65f6\u4e2d\u65ad\uff0c\u6b63\u5728\u6062\u590d...';
-      };
-      voiceButtons(); return true;
-    }).catch(function(err) { if (stamp === epoch) throw err; return false; });
-  }
-  function beginTimer() {
-    clearTimeout(callTimer);
-    callTimer = setTimeout(function() { endCall('\u8bed\u97f3\u8fde\u63a5\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5\u6216\u914d\u7f6e TURN', true); }, 45000);
-  }
-  el('btnVoice').onclick = function() {
-    if (callId) return;
-    if (!state().connected || !state().playing || !peerId) { voiceHint.textContent = '\u53cc\u65b9\u8fdb\u5165\u5bf9\u5c40\u540e\u624d\u80fd\u53d1\u8d77\u8bed\u97f3'; return; }
-    callId = randomId(); incoming = false; voiceButtons(); beginTimer();
-    prepare().then(function(ready) {
-      if (!ready) return;
-      signal('request'); voiceHint.textContent = '\u7b49\u5f85\u5bf9\u65b9\u63a5\u542c...';
-    }).catch(voiceError);
-  };
-  el('btnVoiceAccept').onclick = function() {
-    if (!incoming) return;
-    incoming = false; voiceButtons();
-    prepare().then(function(ready) {
-      if (!ready) return;
-      signal('accept'); voiceHint.textContent = '\u6b63\u5728\u8fde\u63a5\u8bed\u97f3...';
-    }).catch(voiceError);
-  };
-  el('btnVoiceReject').onclick = function() { signal('reject'); endCall('\u5df2\u62d2\u7edd\u8bed\u97f3', false); };
-  el('btnVoiceHangup').onclick = function() { endCall('\u5df2\u6302\u65ad', true); };
-  el('btnVoiceMute').onclick = function() {
-    if (!stream) return;
-    var enabled = !stream.getAudioTracks()[0].enabled;
-    stream.getAudioTracks().forEach(function(t) { t.enabled = enabled; });
-    this.textContent = enabled ? '\u9759\u97f3' : '\u53d6\u6d88\u9759\u97f3';
-  };
-  el('btnVoicePlay').onclick = function() { remote.play().then(function() { el('btnVoicePlay').hidden = true; }).catch(function() {}); };
-  function flushCandidates(connection) {
-    var queue = candidates; candidates = [];
-    return queue.reduce(function(chain, item) {
-      return chain.then(function() { if (connection === pc) return connection.addIceCandidate(item); });
-    }, Promise.resolve());
-  }
-  function handleVoice(d) {
-    if (d.action === 'request') {
-      if (callId || !state().playing) {
-        options.send({ type: 'voice', action: 'reject', callId: d.callId }); return;
-      }
-      callId = d.callId; incoming = true; el('voiceDetails').open = true;
-      voiceHint.textContent = '\u5bf9\u65b9\u9080\u8bf7\u4f60\u8bed\u97f3\uff0c\u63a5\u542c\u540e\u624d\u4f1a\u4f7f\u7528\u9ea6\u514b\u98ce';
-      voiceButtons(); beginTimer(); return;
-    }
-    if (!callId || d.callId !== callId) return;
-    if (d.action === 'hangup' || d.action === 'reject') { endCall('\u5bf9\u65b9\u5df2\u7ed3\u675f\u6216\u672a\u63a5\u542c\u8bed\u97f3', false); return; }
-    var connection = pc, stamp = epoch;
-    var task = Promise.resolve();
-    if (d.action === 'accept' && connection) {
-      voiceHint.textContent = '\u6b63\u5728\u8fde\u63a5\u8bed\u97f3...';
-      task = connection.createOffer().then(function(offer) {
-        if (stamp !== epoch) return;
-        return connection.setLocalDescription(offer).then(function() {
-          if (stamp === epoch) signal('offer', { sdp: offer.sdp });
-        });
-      });
-    } else if (d.action === 'offer' && connection) {
-      task = connection.setRemoteDescription({ type: 'offer', sdp: d.sdp }).then(function() {
-        if (stamp !== epoch) return;
-        return flushCandidates(connection).then(function() { return connection.createAnswer(); }).then(function(answer) {
-          if (stamp !== epoch) return;
-          return connection.setLocalDescription(answer).then(function() {
-            if (stamp === epoch) signal('answer', { sdp: answer.sdp });
-          });
-        });
-      });
-    } else if (d.action === 'answer' && connection) {
-      task = connection.setRemoteDescription({ type: 'answer', sdp: d.sdp }).then(function() { return flushCandidates(connection); });
-    } else if (d.action === 'ice') {
-      if (connection && connection.remoteDescription) task = connection.addIceCandidate(d.candidate);
-      else if (candidates.length < 100) candidates.push(d.candidate);
-    }
-    task.catch(function(err) { if (stamp === epoch) voiceError(err); });
-  }
-  window.addEventListener('pagehide', function() { endCall('', true); });
-  voiceButtons();
+  var voice = ChessVoice({ send: options.send, state: state, randomId: randomId,
+    peerReady: function() { return !!peerId; } });
 
   return {
     identity: identity,
     room: function(id) {
       if (room === id) return;
-      room = id; peerId = ''; lastPeerId = ''; ended = false; messages.textContent = ''; unread = 0; badge.className = '';
+      room = id; peerId = ''; lastPeerId = ''; ended = false; clearBubbles();
       hint.textContent = '\u6d88\u606f\u4ec5\u5728\u672c\u6b21\u623f\u95f4\u5185\u663e\u793a\uff0c\u65ad\u7ebf\u671f\u95f4\u4e0d\u8865\u53d1';
-      el('noteComposer').hidden = true; endCall('\u8fdb\u5165\u5bf9\u5c40\u540e\u53ef\u53d1\u8d77\u8bed\u97f3', true);
+      el('noteComposer').hidden = true; voice.end('\u8fdb\u5165\u5bf9\u5c40\u540e\u53ef\u53d1\u8d77\u8bed\u97f3', true);
     },
     end: function() {
       ended = true; peerId = ''; room = '';
       el('noteComposer').hidden = !lastPeerId;
       hint.textContent = '\u5bf9\u5c40\u5df2\u7ed3\u675f\uff0c\u521b\u5efa\u65b0\u623f\u95f4\u540e\u53ef\u4ee5\u7ee7\u7eed\u804a\u5929';
-      endCall('\u5bf9\u5c40\u7ed3\u675f\uff0c\u8bed\u97f3\u5df2\u5173\u95ed', true);
+      voice.end('\u5bf9\u5c40\u7ed3\u675f\uff0c\u8bed\u97f3\u5df2\u5173\u95ed', true);
     },
-    disconnect: function() { endCall('\u7f51\u7edc\u65ad\u5f00\uff0c\u8bed\u97f3\u5df2\u5173\u95ed\uff1b\u91cd\u8fde\u540e\u53ef\u91cd\u65b0\u53d1\u8d77', false); },
+    disconnect: function() { voice.end('\u7f51\u7edc\u65ad\u5f00\uff0c\u8bed\u97f3\u5df2\u5173\u95ed\uff1b\u91cd\u8fde\u540e\u53ef\u91cd\u65b0\u53d1\u8d77', false); },
     message: function(d) {
+      if (d.type === 'game_start' || d.type === 'reconnected' || d.type === 'room_joined' || d.type === 'room_created') {
+        setTimeout(function() {
+          var black = state().myColor === 'b';
+          el('selfAvatar').textContent = black ? '\u265f' : '\u2659';
+          el('opponentAvatar').textContent = black ? '\u2659' : '\u265f';
+        }, 0);
+      }
       if (d.type === 'chat') {
         var self = d.from.charAt(0) === state().myColor;
         addMessage(d.text, self, self ? '\u6211' : '\u5bf9\u65b9');
@@ -269,8 +132,7 @@ window.ChessSocial = function(options) {
         if (pending[d.peerId] && pending[d.peerId].id === d.noteId) {
           delete pending[d.peerId]; write('chess_whispers_pending', pending); noteHint.textContent = '\u4e0a\u4e00\u5c40\u7684\u7559\u8a00\u5df2\u9001\u8fbe';
         }
-      } else if (d.type === 'voice') handleVoice(d);
-      else if (d.type === 'voice_error') endCall('\u5bf9\u65b9\u4e0d\u5728\u7ebf\uff0c\u6682\u65f6\u65e0\u6cd5\u8bed\u97f3', false);
+      } else if (d.type === 'voice' || d.type === 'voice_audio' || d.type === 'voice_error') voice.message(d);
     }
   };
 };

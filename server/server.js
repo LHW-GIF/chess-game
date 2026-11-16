@@ -654,6 +654,20 @@ function handleMessage(ws, pid, msg) {
     return;
   }
 
+  if (msg.type === 'voice_audio') {
+    var ar = rooms[pl.roomId], ac = ar && ar.voiceCall;
+    if (!ar || ar.status !== 'playing' || !ac || !ac.accepted || ac.mode !== 'relay' || msg.callId !== ac.id ||
+        typeof msg.audio !== 'string' || !/^[A-Za-z0-9+/]{2731}=$/.test(msg.audio)) return;
+    var audioNow = Date.now();
+    if (!pl.audioWindow || audioNow - pl.audioWindow >= 1000) { pl.audioWindow = audioNow; pl.audioCount = 0; }
+    if (++pl.audioCount > 40) return;
+    var ap = ar.players.filter(function(p) { return p.pid !== pid; })[0];
+    if (ap && ap.ws && ap.ws.readyState === WebSocket.OPEN && ap.ws.bufferedAmount < 16384) {
+      send(ap.ws, { type: 'voice_audio', callId: ac.id, audio: msg.audio });
+    }
+    return;
+  }
+
   if (msg.type === 'voice') {
     var vr = rooms[pl.roomId];
     if (!vr || vr.status !== 'playing' || typeof msg.callId !== 'string' || !/^[a-f0-9]{32}$/.test(msg.callId)) return;
@@ -668,14 +682,20 @@ function handleMessage(ws, pid, msg) {
         send(ws, { type: 'voice', action: 'reject', callId: msg.callId, reason: 'busy' }); return;
       }
       pl.voiceRequestedAt = nowVoice;
-      vc = vr.voiceCall = { id: msg.callId, caller: pl.color, accepted: false };
+      vc = vr.voiceCall = { id: msg.callId, caller: pl.color, accepted: false, mode: msg.mode === 'relay' ? 'relay' : 'p2p' };
       vc.timer = setTimeout(function() { stopVoice(vr, 'timeout'); }, 45000);
     } else {
       if (!vc || vc.id !== msg.callId) return;
       if (msg.action === 'hangup' || msg.action === 'reject') { stopVoice(vr, msg.action); return; }
+      if (vc.mode === 'relay' && msg.action !== 'accept') return;
       if (msg.action === 'accept') {
         if (pl.color === vc.caller || vc.accepted) return;
         vc.accepted = true;
+        if (vc.mode === 'relay') {
+          clearTimeout(vc.timer);
+          sendRoom(vr, { type: 'voice', action: 'relay', callId: vc.id });
+          return;
+        }
       } else if (msg.action === 'offer' || msg.action === 'answer') {
         if (!vc.accepted || typeof msg.sdp !== 'string' || msg.sdp.length > 12000 ||
             (msg.action === 'offer') !== (pl.color === vc.caller)) return;
@@ -686,7 +706,7 @@ function handleMessage(ws, pid, msg) {
       } else return;
     }
     send(vp.ws, { type: 'voice', action: msg.action, callId: vc.id,
-      sdp: msg.sdp, candidate: msg.candidate });
+      sdp: msg.sdp, candidate: msg.candidate, mode: vc.mode });
     return;
   }
 
