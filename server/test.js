@@ -67,6 +67,7 @@ function testRules() {
   result = chess.processMove(room, { fr: 1, fc: 0, tr: 0, tc: 0, promo: 'knight' });
   assert.strictEqual(result.ok, true, 'a legal promotion should be accepted');
   assert.strictEqual(room.board[0][0].type, 'knight', 'the requested promotion piece must be applied');
+  assert.strictEqual(result.move.promotion, 'knight', 'move records must expose the promotion piece');
 
   // 王车易位测试（服务端 + 小游戏客户端提示）
   board = emptyBoard();
@@ -96,6 +97,10 @@ function testRules() {
   assert.strictEqual(room.board[7][7], null, 'h1 must be empty after castling');
   assert.strictEqual(room.castling.wK, false, 'white castling rights must be cleared');
   assert.strictEqual(room.castling.wQ, false, 'white queen-side castling rights must also be cleared');
+  assert.strictEqual(room.history.length, 1, 'a snapshot must be stored before each move');
+  assert.strictEqual(room.history[0].turn, 'white', 'the snapshot must record whose turn it was');
+  assert.strictEqual(room.history[0].castling.wK, true, 'the snapshot must preserve castling rights');
+  assert.strictEqual(room.history[0].board[7][4].type, 'king', 'the snapshot must preserve the pre-move board');
 
   // 吃过路兵测试（服务端 + 小游戏客户端提示 + 牵制禁走）
   board = emptyBoard();
@@ -120,6 +125,7 @@ function testRules() {
   assert.strictEqual(result.ok, true, 'server must accept legal en passant capture');
   assert.strictEqual(room.board[2][3].type, 'pawn', 'capturing pawn must land on d6');
   assert.strictEqual(room.board[3][3], null, 'captured pawn on d5 must be removed');
+  assert.deepStrictEqual(room.history[1].enPassant, { r: 2, c: 3 }, 'the snapshot must preserve the en passant target');
 
   // 逼和（stalemate）测试
   board = emptyBoard();
@@ -244,6 +250,36 @@ function testProtocol() {
     p2.send(JSON.stringify({ type: 'move', fr: 1, fc: 4, tr: 3, tc: 4 }));
     return Promise.all([blackMove, blackMoveForBlack]);
   }).then(function() {
+    var request = expectMessage(p2, 'undo_request');
+    p1.send(JSON.stringify({ type: 'undo_request' }));
+    return request;
+  }).then(function(request) {
+    assert.strictEqual(request.from, 'white', 'the undo request must identify the requester color');
+    var reject1 = expectMessage(p1, 'undo_result');
+    var reject2 = expectMessage(p2, 'undo_result');
+    p2.send(JSON.stringify({ type: 'undo_response', accept: false }));
+    return Promise.all([reject1, reject2]);
+  }).then(function(results) {
+    assert.strictEqual(results[0].accepted, false, 'a rejected undo must be reported to both players');
+    assert.strictEqual(results[1].accepted, false);
+    var request = expectMessage(p2, 'undo_request');
+    p1.send(JSON.stringify({ type: 'undo_request' }));
+    return request;
+  }).then(function() {
+    var accept1 = expectMessage(p1, 'undo_result');
+    var accept2 = expectMessage(p2, 'undo_result');
+    p2.send(JSON.stringify({ type: 'undo_response', accept: true }));
+    return Promise.all([accept1, accept2]);
+  }).then(function(results) {
+    assert.strictEqual(results[0].accepted, true, 'an accepted undo must be reported to both players');
+    assert.strictEqual(results[0].currentTurn, 'white', 'undo must restore the requester turn');
+    assert.strictEqual(results[0].board[6][4].type, 'pawn', 'the white e2 pawn must be restored');
+    assert.strictEqual(results[0].board[6][4].color, 'white');
+    assert.strictEqual(results[0].board[4][4], null, 'the white e4 move must be rolled back');
+    assert.strictEqual(results[0].board[1][4].type, 'pawn', 'the black e7 pawn must be restored');
+    assert.strictEqual(results[0].board[3][4], null, 'the black e5 reply must be rolled back');
+    assert.strictEqual(results[0].lastMove, null, 'last move highlight must be cleared after a full rollback');
+  }).then(function() {
     var oppDisconnected = expectMessage(p2, 'opponent_status');
     return closeClient(p1).then(function() {
       return oppDisconnected;
@@ -280,7 +316,7 @@ function testProtocol() {
     p2.send(JSON.stringify({ type: 'create_room', name: '再次开局' }));
     return newRoom;
   }).then(function() {
-    console.log('联机回归测试通过：房间、异常消息、走棋、断线重连、认输结果和再次开局');
+    console.log('联机回归测试通过：房间、异常消息、走棋、悔棋、断线重连、认输结果和再次开局');
   }).finally(function() {
     return Promise.all([closeClient(p1), closeClient(p2)]);
   });
@@ -324,9 +360,61 @@ function testWaitingRoomSurvivesCreatorDisconnect() {
   });
 }
 
+function testDrawAgreement() {
+  var white, black;
+  return Promise.all([openClient(), openClient()]).then(function(clients) {
+    white = clients[0];
+    black = clients[1];
+    var created = expectMessage(white, 'room_created');
+    white.send(JSON.stringify({ type: 'create_room', name: '和棋白方' }));
+    return created;
+  }).then(function(room) {
+    var joined = expectMessage(black, 'room_joined');
+    var startWhite = expectMessage(white, 'game_start');
+    var startBlack = expectMessage(black, 'game_start');
+    black.send(JSON.stringify({ type: 'join_room', roomId: room.roomId, name: '和棋黑方' }));
+    return Promise.all([joined, startWhite, startBlack]);
+  }).then(function() {
+    var offer = expectMessage(black, 'draw_request');
+    white.send(JSON.stringify({ type: 'draw_request' }));
+    return offer;
+  }).then(function(offer) {
+    assert.strictEqual(offer.from, 'white', 'the draw offer must identify the proposer color');
+    var rejectWhite = expectMessage(white, 'draw_result');
+    var rejectBlack = expectMessage(black, 'draw_result');
+    black.send(JSON.stringify({ type: 'draw_response', accept: false }));
+    return Promise.all([rejectWhite, rejectBlack]);
+  }).then(function(results) {
+    assert.strictEqual(results[0].accepted, false, 'a rejected draw offer must be reported');
+    assert.strictEqual(results[1].accepted, false);
+    var moveWhite = expectMessage(white, 'move_made');
+    var moveBlack = expectMessage(black, 'move_made');
+    white.send(JSON.stringify({ type: 'move', fr: 6, fc: 4, tr: 4, tc: 4 }));
+    return Promise.all([moveWhite, moveBlack]);
+  }).then(function() {
+    var offer = expectMessage(black, 'draw_request');
+    white.send(JSON.stringify({ type: 'draw_request' }));
+    return offer;
+  }).then(function() {
+    var overWhite = expectMessage(white, 'game_over');
+    var overBlack = expectMessage(black, 'game_over');
+    black.send(JSON.stringify({ type: 'draw_response', accept: true }));
+    return Promise.all([overWhite, overBlack]);
+  }).then(function(results) {
+    assert.strictEqual(results[0].reason, 'draw', 'accepting a draw must finish the game');
+    assert.strictEqual(results[0].winner, null, 'a draw must have no winner');
+    assert.strictEqual(results[1].reason, 'draw');
+    console.log('和棋协商测试通过：拒绝后对局继续，同意后双方结束为平局');
+  }).finally(function() {
+    return Promise.all([closeClient(white), closeClient(black)]);
+  });
+}
+
 testRules();
 testProtocol().then(function() {
   return testWaitingRoomSurvivesCreatorDisconnect();
+}).then(function() {
+  return testDrawAgreement();
 }).then(function() {
   process.exit(0);
 }, function(err) {

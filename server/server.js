@@ -31,6 +31,27 @@ function initCastling() {
   return { wK: true, wQ: true, bK: true, bQ: true };
 }
 
+function cloneCastling(castling) {
+  if (!castling) return initCastling();
+  return { wK: !!castling.wK, wQ: !!castling.wQ, bK: !!castling.bK, bQ: !!castling.bQ };
+}
+
+function cloneBoard(board) {
+  var nb = [];
+  for (var r = 0; r < 8; r++) {
+    nb[r] = [];
+    for (var c = 0; c < 8; c++) {
+      var p = board[r][c];
+      nb[r][c] = p ? { type: p.type, color: p.color } : null;
+    }
+  }
+  return nb;
+}
+
+function cloneEnPassant(enPassant) {
+  return enPassant ? { r: enPassant.r, c: enPassant.c } : null;
+}
+
 function initBoard() {
   var b = [];
   var r, c;
@@ -260,12 +281,22 @@ function processMove(room, msg) {
   if (!room.castling) room.castling = initCastling();
   if (room.enPassant === undefined) room.enPassant = null;
   if (!room.moves) room.moves = [];
+  if (!room.history) room.history = [];
 
   var board = room.board;
   var fr = msg.fr, fc = msg.fc, tr = msg.tr, tc = msg.tc;
   var piece = board[fr][fc];
   if (!piece || piece.color !== room.turn) return { ok: false, err: 'not your turn' };
   if (!validMove(board, fr, fc, tr, tc, piece.color, room)) return { ok: false, err: 'invalid move' };
+
+  room.history.push({
+    board: cloneBoard(room.board),
+    turn: room.turn,
+    castling: cloneCastling(room.castling),
+    enPassant: cloneEnPassant(room.enPassant)
+  });
+  room.undoRequest = null;
+  room.drawRequest = null;
 
   var isEnPassant = piece.type === 'pawn' && fc !== tc && !board[tr][tc];
   var isCastling = piece.type === 'king' && Math.abs(tc - fc) === 2;
@@ -287,10 +318,12 @@ function processMove(room, msg) {
     }
   }
 
+  var promotion = null;
   if (piece.type === 'pawn') {
     var promoRow = piece.color === 'white' ? 0 : 7;
     if (tr === promoRow) {
-      board[tr][tc] = { type: msg.promo || 'queen', color: piece.color };
+      promotion = msg.promo || 'queen';
+      board[tr][tc] = { type: promotion, color: piece.color };
     }
   }
 
@@ -321,7 +354,8 @@ function processMove(room, msg) {
     captured: captured,
     check: check,
     enPassant: isEnPassant,
-    castling: isCastling
+    castling: isCastling,
+    promotion: promotion
   };
   room.moves.push(moveRec);
 
@@ -335,7 +369,8 @@ function processMove(room, msg) {
     enPassant: room.enPassant,
     gameOver: gameOver,
     result: result,
-    winner: gameOver && check ? piece.color : null
+    winner: gameOver && check ? piece.color : null,
+    moveCount: room.moves.length
   };
 }
 
@@ -366,6 +401,8 @@ function finishRoom(room, reason, winner) {
   if (!room || room.status === 'finished') return;
   room.status = 'finished';
   room.finishedAt = Date.now();
+  room.undoRequest = null;
+  room.drawRequest = null;
   for (var i = 0; i < room.players.length; i++) {
     clearPlayerDisconnectTimer(room.players[i]);
   }
@@ -421,6 +458,7 @@ function restorePlayerConnection(room, roomPlayer, ws, pid) {
     lastMove: lastMove,
     castling: room.castling,
     enPassant: room.enPassant,
+    moveCount: room.moves ? room.moves.length : 0,
     players: room.players.map(function(p) {
       return { name: p.name, color: p.color, disconnected: !!p.disconnected };
     })
@@ -464,7 +502,10 @@ function handleMessage(ws, pid, msg) {
       enPassant: null,
       status: 'waiting',
       createdAt: Date.now(),
-      moves: []
+      moves: [],
+      history: [],
+      undoRequest: null,
+      drawRequest: null
     };
     rooms[rid] = room;
     pl.roomId = rid;
@@ -537,6 +578,10 @@ function handleMessage(ws, pid, msg) {
     room2.enPassant = null;
     room2.status = 'playing';
     room2.turn = 'white';
+    room2.moves = [];
+    room2.history = [];
+    room2.undoRequest = null;
+    room2.drawRequest = null;
     send(ws, {
       type: 'room_joined',
       roomId: rid2,
@@ -559,12 +604,133 @@ function handleMessage(ws, pid, msg) {
     return;
   }
 
+  if (msg.type === 'chat') {
+    var roomChat = rooms[pl.roomId];
+    if (!roomChat) { send(ws, { type: 'chat_error', error: 'not in a room' }); return; }
+    if (typeof msg.text !== 'string') return;
+    var text = msg.text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+    if (!text) return;
+    if (text.length > 200) text = text.slice(0, 200);
+    var nowChat = Date.now();
+    if (!pl.chatTimes) pl.chatTimes = [];
+    pl.chatTimes = pl.chatTimes.filter(function(t) { return nowChat - t < 5000; });
+    if (pl.chatTimes.length >= 5) {
+      send(ws, { type: 'chat_error', error: 'sending messages too quickly' });
+      return;
+    }
+    pl.chatTimes.push(nowChat);
+    sendRoom(roomChat, { type: 'chat', from: pl.color, fromName: pl.name, text: text, at: nowChat });
+    return;
+  }
+
   if (msg.type === 'move') {
     var room3 = rooms[pl.roomId];
     if (!room3 || room3.status !== 'playing') { roomMessageError(ws, 'game is not active'); return; }
     var res = processMove(room3, msg);
     if (res.ok) sendRoom(room3, Object.assign({ type: 'move_made' }, res));
     else roomMessageError(ws, res.err);
+    return;
+  }
+
+  if (msg.type === 'undo_request') {
+    var roomU = rooms[pl.roomId];
+    if (!roomU || roomU.status !== 'playing') { roomMessageError(ws, 'game is not active'); return; }
+    if (roomU.undoRequest) { roomMessageError(ws, 'undo request already pending'); return; }
+    if (roomU.drawRequest) { roomMessageError(ws, 'draw offer already pending'); return; }
+    if (!roomU.history || !roomU.history.length) { roomMessageError(ws, 'no move to undo'); return; }
+    var targetIndex = -1;
+    for (var hi = roomU.history.length - 1; hi >= 0; hi--) {
+      if (roomU.history[hi].turn === pl.color) { targetIndex = hi; break; }
+    }
+    if (targetIndex < 0) { roomMessageError(ws, 'no move to undo'); return; }
+    var undoOpponent = null;
+    for (var oi = 0; oi < roomU.players.length; oi++) {
+      if (roomU.players[oi].color !== pl.color) undoOpponent = roomU.players[oi];
+    }
+    if (!undoOpponent || !undoOpponent.ws) { roomMessageError(ws, 'opponent is offline'); return; }
+    roomU.undoRequest = { pid: pid, color: pl.color };
+    send(undoOpponent.ws, { type: 'undo_request', from: pl.color, fromName: pl.name });
+    return;
+  }
+
+  if (msg.type === 'undo_response') {
+    var roomR = rooms[pl.roomId];
+    if (!roomR || roomR.status !== 'playing' || !roomR.undoRequest) {
+      roomMessageError(ws, 'no undo request to respond to');
+      return;
+    }
+    if (roomR.undoRequest.pid === pid) {
+      roomMessageError(ws, 'cannot respond to your own undo request');
+      return;
+    }
+    var undoReq = roomR.undoRequest;
+    roomR.undoRequest = null;
+    if (msg.accept !== true) {
+      sendRoom(roomR, { type: 'undo_result', accepted: false, by: pl.color });
+      return;
+    }
+    var undoIndex = -1;
+    for (var ui = roomR.history.length - 1; ui >= 0; ui--) {
+      if (roomR.history[ui].turn === undoReq.color) { undoIndex = ui; break; }
+    }
+    if (undoIndex < 0) {
+      sendRoom(roomR, { type: 'undo_result', accepted: false, by: pl.color, error: 'no move to undo' });
+      return;
+    }
+    var snap = roomR.history[undoIndex];
+    roomR.history.length = undoIndex;
+    if (roomR.moves) roomR.moves.length = undoIndex;
+    roomR.board = cloneBoard(snap.board);
+    roomR.turn = snap.turn;
+    roomR.castling = cloneCastling(snap.castling);
+    roomR.enPassant = cloneEnPassant(snap.enPassant);
+    var undoLastMove = roomR.moves && roomR.moves.length ? roomR.moves[roomR.moves.length - 1] : null;
+    sendRoom(roomR, {
+      type: 'undo_result',
+      accepted: true,
+      by: undoReq.color,
+      board: roomR.board,
+      currentTurn: roomR.turn,
+      castling: roomR.castling,
+      enPassant: roomR.enPassant,
+      inCheck: inCheck(roomR.board, roomR.turn),
+      lastMove: undoLastMove,
+      moveCount: roomR.moves ? roomR.moves.length : 0
+    });
+    return;
+  }
+
+  if (msg.type === 'draw_request') {
+    var roomD = rooms[pl.roomId];
+    if (!roomD || roomD.status !== 'playing') { roomMessageError(ws, 'game is not active'); return; }
+    if (roomD.drawRequest) { roomMessageError(ws, 'draw offer already pending'); return; }
+    if (roomD.undoRequest) { roomMessageError(ws, 'undo request already pending'); return; }
+    var drawOpponent = null;
+    for (var di = 0; di < roomD.players.length; di++) {
+      if (roomD.players[di].color !== pl.color) drawOpponent = roomD.players[di];
+    }
+    if (!drawOpponent || !drawOpponent.ws) { roomMessageError(ws, 'opponent is offline'); return; }
+    roomD.drawRequest = { pid: pid, color: pl.color };
+    send(drawOpponent.ws, { type: 'draw_request', from: pl.color, fromName: pl.name });
+    return;
+  }
+
+  if (msg.type === 'draw_response') {
+    var roomE = rooms[pl.roomId];
+    if (!roomE || roomE.status !== 'playing' || !roomE.drawRequest) {
+      roomMessageError(ws, 'no draw offer to respond to');
+      return;
+    }
+    if (roomE.drawRequest.pid === pid) {
+      roomMessageError(ws, 'cannot respond to your own draw offer');
+      return;
+    }
+    roomE.drawRequest = null;
+    if (msg.accept !== true) {
+      sendRoom(roomE, { type: 'draw_result', accepted: false, by: pl.color });
+      return;
+    }
+    finishRoom(roomE, 'draw', null);
     return;
   }
 
@@ -639,6 +805,8 @@ wss.on('connection', function(ws) {
           roomPlayer.disconnected = true;
           roomPlayer.disconnectedAt = Date.now();
           roomPlayer.ws = null;
+          room.undoRequest = null;
+          room.drawRequest = null;
           clearPlayerDisconnectTimer(roomPlayer);
           if (room.status === 'playing') {
             sendRoom(room, { type: 'opponent_status', status: 'disconnected', graceMs: reconnectGraceMs }, ws);
